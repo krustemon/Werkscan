@@ -181,7 +181,7 @@ async function callOpenRouter(apiKey: string, base64Image: string, modelName: st
 }
 
 async function callBlackbox(apiKey: string, base64Image: string, modelName: string, userCondition?: string): Promise<AdAnalysis> {
-  return retryOperation(async () => {
+  const executeCall = async (modelToUse: string) => {
     const finalPrompt = userCondition 
       ? `${SYSTEM_PROMPT}\n\nUSER INFORMATION ZUM ZUSTAND: "${userCondition}".`
       : SYSTEM_PROMPT;
@@ -189,15 +189,15 @@ async function callBlackbox(apiKey: string, base64Image: string, modelName: stri
     const response = await fetch("https://api.blackbox.ai/v1/chat/completions", {
       method: "POST",
       headers: {
-        "Authorization": `Bearer ${apiKey}`,
+        "Authorization": `Bearer ${apiKey.trim()}`,
         "Content-Type": "application/json"
       },
       body: JSON.stringify({
-        model: modelName || "blackboxai",
+        model: modelToUse,
         messages: [
           {
             role: "system",
-            content: finalPrompt + "\nOUTPUT VALID JSON ONLY. Must contain fields: item_detected (boolean), brand_detected (string), title (string), price_estimate (string), condition (string), category (string), description (string), keywords (array of strings), reasoning (string), shipping_cost (string)."
+            content: finalPrompt + "\nIMPORTANT: Return ONLY valid, raw JSON without markdown code block tags or extra text. Must contain fields: item_detected (boolean), brand_detected (string), title (string), price_estimate (string), condition (string), category (string), description (string), keywords (array of strings), reasoning (string), shipping_cost (string)."
           },
           {
             role: "user",
@@ -206,27 +206,47 @@ async function callBlackbox(apiKey: string, base64Image: string, modelName: stri
               { type: "image_url", image_url: { url: `data:image/jpeg;base64,${base64Image}` } }
             ]
           }
-        ],
-        response_format: { type: "json_object" }
+        ]
       })
     });
 
     if (!response.ok) {
       const err = await response.text();
-      if (response.status === 429) throw new Error(`429 Rate Limit: ${err}`);
-      throw new Error(`Blackbox AI Error ${response.status}: ${err}`);
+      if (response.status === 429) throw new Error(`429 Rate Limit (Blackbox AI): ${err}`);
+      throw new Error(`Blackbox AI Error (${response.status}): ${err}`);
     }
 
     const data = await response.json();
-    const content = data.choices[0]?.message?.content;
-    if (!content) throw new Error("Empty response from Blackbox AI");
+    const content = data.choices?.[0]?.message?.content;
+    if (!content) throw new Error("Keine Antwort von Blackbox AI erhalten.");
 
-    let cleanJson = content.replace(/```json\n?|\n?```/g, "").trim();
+    let cleanJson = content.replace(/```json\n?|\n?```/g, "").replace(/```/g, "").trim();
     const jsonMatch = cleanJson.match(/\{[\s\S]*\}/);
     if (jsonMatch) {
       cleanJson = jsonMatch[0];
     }
-    return JSON.parse(cleanJson) as AdAnalysis;
+    
+    try {
+      return JSON.parse(cleanJson) as AdAnalysis;
+    } catch (parseErr) {
+      console.error("Blackbox JSON parsing error. Raw output:", content);
+      throw new Error("Ungültiges JSON-Format von Blackbox AI erhalten.");
+    }
+  };
+
+  const primaryModel = (modelName && modelName.trim()) ? modelName.trim() : "blackboxai";
+
+  return retryOperation(async () => {
+    try {
+      return await executeCall(primaryModel);
+    } catch (err: any) {
+      // If primary model failed with 400 (e.g. invalid model name) and wasn't 'blackboxai', fallback to 'blackboxai'
+      if (primaryModel !== "blackboxai" && (err?.message?.includes("400") || err?.message?.includes("Invalid model"))) {
+        console.warn(`Modell '${primaryModel}' bei Blackbox ungültig. Automatischer Fallback auf 'blackboxai'...`);
+        return await executeCall("blackboxai");
+      }
+      throw err;
+    }
   });
 }
 
@@ -378,6 +398,17 @@ export const analyzeImage = async (base64Image: string, providers: ApiProviderCo
     } catch (error: any) {
       console.warn(`Fehler bei ${provider.name}:`, error);
       lastError = error;
+    }
+  }
+
+  // Backup fallback using environment key if user providers failed
+  if (process.env.API_KEY || process.env.GEMINI_API_KEY) {
+    const sysKey = process.env.API_KEY || process.env.GEMINI_API_KEY;
+    console.log("Nutze System Gemini API Key als automatisches Fallback...");
+    try {
+      return await callGemini(sysKey!, cleanBase64, "gemini-2.5-flash", userCondition);
+    } catch (fallbackError: any) {
+      console.warn("System Gemini Fallback fehlgeschlagen:", fallbackError);
     }
   }
 

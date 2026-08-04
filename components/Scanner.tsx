@@ -149,42 +149,61 @@ const Scanner: React.FC<ScannerProps> = ({ onAnalysisComplete, onCancel, isEmbed
     }, 4000);
   };
 
+  const captureScaledFrame = (video: HTMLVideoElement, canvas: HTMLCanvasElement, maxDim = 1024, quality = 0.75): string | null => {
+    if (!video.videoWidth || !video.videoHeight) return null;
+    let width = video.videoWidth;
+    let height = video.videoHeight;
+
+    if (width > maxDim || height > maxDim) {
+      if (width > height) {
+        height = Math.round((height * maxDim) / width);
+        width = maxDim;
+      } else {
+        width = Math.round((width * maxDim) / height);
+        height = maxDim;
+      }
+    }
+
+    canvas.width = width;
+    canvas.height = height;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return null;
+    ctx.drawImage(video, 0, 0, width, height);
+    return canvas.toDataURL('image/jpeg', quality);
+  };
+
   const attemptAutoCapture = useCallback(async () => {
     if (videoRef.current && canvasRef.current && !isAnalyzing && !isQuotaExceeded && !isPaused) {
       const video = videoRef.current;
       const canvas = canvasRef.current;
       if (video.readyState !== 4) return; 
 
-      canvas.width = video.videoWidth;
-      canvas.height = video.videoHeight;
-      const ctx = canvas.getContext('2d');
-      if (ctx) {
-        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-        const dataUrl = canvas.toDataURL('image/jpeg', 0.6); // Lower quality slightly for speed
+      const dataUrl = captureScaledFrame(video, canvas, 1024, 0.75);
+      if (!dataUrl) return;
+      
+      setIsAnalyzing(true);
+      try {
+        const providers = settings?.providers || [];
+        const result = await analyzeImage(dataUrl, providers);
         
-        setIsAnalyzing(true);
-        try {
-          const providers = settings?.providers || [];
-          const result = await analyzeImage(dataUrl, providers);
-          
-          if (result.item_detected) {
-            handleScanSuccess(result, dataUrl, false);
-          } else {
-            console.log("No valid item detected");
-          }
-        } catch (e: any) {
-          const errStr = JSON.stringify(e) + (e.message || "");
-          if (errStr.includes("429") || errStr.includes("RESOURCE_EXHAUSTED") || errStr.includes("quota")) {
-             if (scanIntervalRef.current) clearInterval(scanIntervalRef.current);
-             setIsQuotaExceeded(true);
-             setIsPaused(true); 
-             setError("⚠️ Rate Limit. Abkühlung...");
-             setIsAnalyzing(false);
-             return;
-          }
-        } finally {
-          setIsAnalyzing(false);
+        if (result.item_detected) {
+          handleScanSuccess(result, dataUrl, false);
+        } else {
+          console.log("Kein gültiges Objekt erkannt");
         }
+      } catch (e: any) {
+        console.warn("Auto Capture Fehler:", e);
+        const errStr = e?.message || JSON.stringify(e);
+        if (errStr.includes("429") || errStr.includes("RESOURCE_EXHAUSTED") || errStr.includes("quota")) {
+           if (scanIntervalRef.current) clearInterval(scanIntervalRef.current);
+           setIsQuotaExceeded(true);
+           setIsPaused(true); 
+           setError("⚠️ Rate Limit. Pausiert...");
+           setIsAnalyzing(false);
+           return;
+        }
+      } finally {
+        setIsAnalyzing(false);
       }
     }
   }, [isAnalyzing, mode, onAnalysisComplete, isQuotaExceeded, isPaused, settings]);
@@ -198,36 +217,33 @@ const Scanner: React.FC<ScannerProps> = ({ onAnalysisComplete, onCancel, isEmbed
     if (videoRef.current && canvasRef.current && !isAnalyzing) {
       const video = videoRef.current;
       const canvas = canvasRef.current;
-      canvas.width = video.videoWidth;
-      canvas.height = video.videoHeight;
-      const ctx = canvas.getContext('2d');
-      if (ctx) {
-        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-        const dataUrl = canvas.toDataURL('image/jpeg', 0.8);
-        setIsAnalyzing(true);
-        setError(null);
-        setIsDuplicateScan(false);
-        try {
-          const providers = settings?.providers || [];
-          const result = await analyzeImage(dataUrl, providers);
-          if (result.item_detected) {
-            handleScanSuccess(result, dataUrl, true);
-          } else {
-            setError("Kein Objekt.");
-            setTimeout(() => setError(null), 3000);
-          }
-        } catch (err: any) {
-             const errStr = err.message || JSON.stringify(err);
-             if (errStr.includes("429") || errStr.includes("RESOURCE_EXHAUSTED")) {
-               setIsQuotaExceeded(true);
-               setError("Limit erreicht. Warte kurz.");
-             } else {
-               setError("Fehler.");
-             }
-             setTimeout(() => setError(null), 3000);
-        } finally {
-          setIsAnalyzing(false);
+      const dataUrl = captureScaledFrame(video, canvas, 1024, 0.85);
+      if (!dataUrl) return;
+
+      setIsAnalyzing(true);
+      setError(null);
+      setIsDuplicateScan(false);
+      try {
+        const providers = settings?.providers || [];
+        const result = await analyzeImage(dataUrl, providers);
+        if (result.item_detected) {
+          handleScanSuccess(result, dataUrl, true);
+        } else {
+          setError("Kein Objekt erkannt. Bitte näher ran gehen.");
+          setTimeout(() => setError(null), 3500);
         }
+      } catch (err: any) {
+           console.error("Manual Capture Error:", err);
+           const errStr = err?.message || JSON.stringify(err);
+           if (errStr.includes("429") || errStr.includes("RESOURCE_EXHAUSTED")) {
+             setIsQuotaExceeded(true);
+             setError("Limit erreicht. Kurze Pause.");
+           } else {
+             setError(`Analysefehler: ${errStr.length > 50 ? errStr.substring(0, 50) + '...' : errStr}`);
+           }
+           setTimeout(() => setError(null), 4000);
+      } finally {
+        setIsAnalyzing(false);
       }
     }
   };

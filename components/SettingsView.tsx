@@ -115,11 +115,11 @@ const SettingsView: React.FC<SettingsViewProps> = ({ settings, onSave, onBack })
                             <div className="mt-2 flex flex-wrap gap-1.5">
                                <span className="text-[10px] text-stone-500 w-full mb-0.5">Schnellauswahl Pro Modelle:</span>
                                {[
-                                 { label: 'Blackbox Default', value: 'blackboxai' },
-                                 { label: 'Claude Sonnet', value: 'blackboxai/anthropic/claude-sonnet-4.6' },
-                                 { label: 'GPT-4.1 Mini', value: 'blackboxai/openai/gpt-4.1-mini' },
-                                 { label: 'Gemini Flash', value: 'blackboxai/google/gemini-2.0-flash' },
-                                 { label: 'DeepSeek Chat', value: 'blackboxai/deepseek/deepseek-chat' },
+                                 { label: 'Blackbox Agent (Default)', value: 'blackboxai' },
+                                 { label: 'GPT-4o', value: 'gpt-4o' },
+                                 { label: 'GPT-4o Mini', value: 'gpt-4o-mini' },
+                                 { label: 'Claude 3.5 Sonnet', value: 'claude-3-5-sonnet' },
+                                 { label: 'Gemini 2.0 Flash', value: 'gemini-2.0-flash' },
                                ].map((m) => (
                                  <button
                                    key={m.value}
