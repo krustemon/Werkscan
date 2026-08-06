@@ -26,9 +26,7 @@ const parsePrice = (priceStr: string): number => {
 
 const DEFAULT_SETTINGS: AppSettings = {
   providers: [
-    { id: 'blackbox', name: 'Blackbox AI', apiKey: 'sk-v8P_-3kN7H9tC2bgGdGdTQ', isEnabled: true, model: 'blackboxai' },
-    { id: 'gemini', name: 'Google Gemini', apiKey: '', isEnabled: true, model: 'gemini-2.5-flash' },
-    { id: 'openrouter', name: 'OpenRouter (Fallback)', apiKey: '', isEnabled: true, model: 'google/gemini-2.0-flash-lite-preview-02-05:free' }
+    { id: 'blackbox', name: 'Blackbox AI', apiKey: 'sk-v8P_-3kN7H9tC2bgGdGdTQ', isEnabled: true, model: 'blackboxai/blackbox-pro' }
   ]
 };
 
@@ -49,23 +47,22 @@ const App: React.FC = () => {
       const saved = localStorage.getItem('werkaholic_settings');
       if (saved) {
         const parsed = JSON.parse(saved);
-        return {
-          providers: DEFAULT_SETTINGS.providers.map(def => {
-             const existing = parsed.providers?.find((p: any) => p.id === def.id);
-             if (!existing) return def;
-             // Reset invalid model names to default 'blackboxai'
-             let modelToUse = existing.model || def.model;
-             if (def.id === 'blackbox' && (modelToUse.includes('gpt-4.1-mini') || modelToUse.includes('blackboxai/'))) {
-               modelToUse = 'blackboxai';
-             }
-             return { 
-               ...def, 
-               ...existing, 
-               model: modelToUse,
-               apiKey: existing.apiKey || def.apiKey 
-             };
-          })
-        };
+        const blackboxProv = parsed.providers?.find((p: any) => p.id === 'blackbox');
+        if (blackboxProv) {
+          let modelToUse = blackboxProv.model || 'blackboxai/blackbox-pro';
+          if (!modelToUse.includes('/') || modelToUse === 'blackboxai') {
+            modelToUse = 'blackboxai/blackbox-pro';
+          }
+          return {
+            providers: [{
+              id: 'blackbox',
+              name: 'Blackbox AI',
+              apiKey: (blackboxProv.apiKey && blackboxProv.apiKey.trim().length > 5) ? blackboxProv.apiKey.trim() : 'sk-v8P_-3kN7H9tC2bgGdGdTQ',
+              isEnabled: true,
+              model: modelToUse
+            }]
+          };
+        }
       }
       return DEFAULT_SETTINGS;
     } catch (e) {

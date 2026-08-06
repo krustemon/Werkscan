@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
-import { Save, Key, Shield, AlertTriangle, Check } from 'lucide-react';
+import { Save, Key, Shield, AlertTriangle, Check, RefreshCw } from 'lucide-react';
 import { AppSettings, ApiProviderConfig } from '../types';
+import { fetchBlackboxModels } from '../services/geminiService';
 
 interface SettingsViewProps {
   settings: AppSettings;
@@ -11,11 +12,24 @@ interface SettingsViewProps {
 const SettingsView: React.FC<SettingsViewProps> = ({ settings, onSave, onBack }) => {
   const [localSettings, setLocalSettings] = useState<AppSettings>(settings);
   const [showSuccess, setShowSuccess] = useState(false);
+  const [fetchedModels, setFetchedModels] = useState<string[]>([]);
+  const [isFetchingModels, setIsFetchingModels] = useState(false);
 
   const handleProviderChange = (index: number, field: keyof ApiProviderConfig, value: any) => {
     const newProviders = [...localSettings.providers];
     newProviders[index] = { ...newProviders[index], [field]: value };
     setLocalSettings({ ...localSettings, providers: newProviders });
+  };
+
+  const handleFetchBlackboxModels = async (apiKey: string) => {
+    if (!apiKey || apiKey.trim().length < 5) return;
+    setIsFetchingModels(true);
+    try {
+      const models = await fetchBlackboxModels(apiKey);
+      setFetchedModels(models);
+    } finally {
+      setIsFetchingModels(false);
+    }
   };
 
   const saveSettings = () => {
@@ -112,49 +126,63 @@ const SettingsView: React.FC<SettingsViewProps> = ({ settings, onSave, onBack })
                             disabled={!provider.isEnabled}
                          />
                          {provider.id === 'blackbox' && provider.isEnabled && (
-                            <div className="mt-2 flex flex-wrap gap-1.5">
-                               <span className="text-[10px] text-stone-500 w-full mb-0.5">Schnellauswahl Pro Modelle:</span>
-                               {[
-                                 { label: 'Blackbox Agent (Default)', value: 'blackboxai' },
-                                 { label: 'GPT-4o', value: 'gpt-4o' },
-                                 { label: 'GPT-4o Mini', value: 'gpt-4o-mini' },
-                                 { label: 'Claude 3.5 Sonnet', value: 'claude-3-5-sonnet' },
-                                 { label: 'Gemini 2.0 Flash', value: 'gemini-2.0-flash' },
-                               ].map((m) => (
-                                 <button
-                                   key={m.value}
-                                   type="button"
-                                   onClick={() => handleProviderChange(index, 'model', m.value)}
-                                   className={`px-2 py-0.5 text-[11px] font-mono rounded border transition-colors ${
-                                     provider.model === m.value
-                                       ? 'bg-emerald-950 border-emerald-500 text-emerald-300'
-                                       : 'bg-stone-900 border-stone-700 text-stone-400 hover:border-stone-500 hover:text-stone-200'
-                                   }`}
-                                 >
-                                   {m.label}
-                                 </button>
-                               ))}
-                            </div>
-                         )}
-                         {provider.id === 'gemini' && provider.isEnabled && (
-                            <div className="mt-2 flex flex-wrap gap-1.5">
-                               {[
-                                 { label: 'Gemini 2.5 Flash', value: 'gemini-2.5-flash' },
-                                 { label: 'Gemini 2.5 Pro', value: 'gemini-2.5-pro' },
-                               ].map((m) => (
-                                 <button
-                                   key={m.value}
-                                   type="button"
-                                   onClick={() => handleProviderChange(index, 'model', m.value)}
-                                   className={`px-2 py-0.5 text-[11px] font-mono rounded border transition-colors ${
-                                     provider.model === m.value
-                                       ? 'bg-blue-950 border-blue-500 text-blue-300'
-                                       : 'bg-stone-900 border-stone-700 text-stone-400 hover:border-stone-500 hover:text-stone-200'
-                                   }`}
-                                 >
-                                   {m.label}
-                                 </button>
-                               ))}
+                            <div className="mt-2 space-y-2">
+                               <div className="flex items-center justify-between">
+                                 <span className="text-[10px] text-stone-500">Empfohlene Modelle:</span>
+                                 {provider.apiKey && provider.apiKey.trim().length > 5 && (
+                                   <button
+                                     type="button"
+                                     onClick={() => handleFetchBlackboxModels(provider.apiKey)}
+                                     disabled={isFetchingModels}
+                                     className="text-[10px] text-rust-400 hover:text-rust-300 flex items-center gap-1 font-mono"
+                                   >
+                                     <RefreshCw className={`w-3 h-3 ${isFetchingModels ? 'animate-spin' : ''}`} />
+                                     Live-Modelle prüfen
+                                   </button>
+                                 )}
+                               </div>
+                               <div className="flex flex-wrap gap-1.5">
+                                 {[
+                                   { label: 'Blackbox Pro (Empfohlen)', value: 'blackboxai/blackbox-pro' },
+                                    { label: 'Gemini 3.5 Flash', value: 'blackboxai/google/gemini-3.5-flash' },
+                                    { label: 'GPT-5.4', value: 'blackboxai/openai/gpt-5.4' },
+                                    { label: 'Claude Sonnet 4.6', value: 'blackboxai/anthropic/claude-sonnet-4.6' },
+                                 ].map((m) => (
+                                   <button
+                                     key={m.value}
+                                     type="button"
+                                     onClick={() => handleProviderChange(index, 'model', m.value)}
+                                     className={`px-2 py-0.5 text-[11px] font-mono rounded border transition-colors ${
+                                       provider.model === m.value
+                                         ? 'bg-emerald-950 border-emerald-500 text-emerald-300'
+                                         : 'bg-stone-900 border-stone-700 text-stone-400 hover:border-stone-500 hover:text-stone-200'
+                                     }`}
+                                   >
+                                     {m.label}
+                                   </button>
+                                 ))}
+                               </div>
+                               {fetchedModels.length > 0 && (
+                                 <div className="mt-2 pt-2 border-t border-stone-800">
+                                   <span className="text-[10px] text-stone-400 block mb-1 font-mono">Verfügbare Modelle deines Keys:</span>
+                                   <div className="flex flex-wrap gap-1 max-h-24 overflow-y-auto">
+                                     {fetchedModels.map((fm) => (
+                                       <button
+                                         key={fm}
+                                         type="button"
+                                         onClick={() => handleProviderChange(index, 'model', fm)}
+                                         className={`px-2 py-0.5 text-[10px] font-mono rounded border ${
+                                           provider.model === fm
+                                             ? 'bg-rust-950 border-rust-500 text-rust-300'
+                                             : 'bg-stone-900 border-stone-800 text-stone-400 hover:text-stone-200'
+                                         }`}
+                                       >
+                                         {fm}
+                                       </button>
+                                     ))}
+                                   </div>
+                                 </div>
+                               )}
                             </div>
                          )}
                       </div>

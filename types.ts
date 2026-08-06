@@ -31,7 +31,7 @@ export interface HistoryItem {
   analysis: AdAnalysis;
 }
 
-export type ApiProviderType = 'gemini' | 'openrouter' | 'blackbox';
+export type ApiProviderType = 'blackbox';
 
 export interface ApiProviderConfig {
   id: ApiProviderType;

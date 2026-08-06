@@ -176,16 +176,30 @@ const ResultView: React.FC<ResultViewProps> = ({ result, images, onBack, onSave 
   };
 
   const getApiKey = () => {
-      let apiKey = process.env.API_KEY || "";
+      let apiKey = "";
       try {
           const saved = localStorage.getItem('werkaholic_settings');
           if (saved) {
               const parsed = JSON.parse(saved);
-              const gemini = parsed.providers?.find((p: any) => p.id === 'gemini');
-              if (gemini && gemini.apiKey && gemini.isEnabled) apiKey = gemini.apiKey;
+              const blackbox = parsed.providers?.find((p: any) => p.id === 'blackbox');
+              if (blackbox && blackbox.apiKey && blackbox.isEnabled) apiKey = blackbox.apiKey;
           }
       } catch(e) {}
+      if (!apiKey || apiKey.trim().length < 5) {
+          apiKey = 'sk-v8P_-3kN7H9tC2bgGdGdTQ';
+      }
       return apiKey;
+  };
+
+  const getSavedProviders = () => {
+      try {
+          const saved = localStorage.getItem('werkaholic_settings');
+          if (saved) {
+              const parsed = JSON.parse(saved);
+              return parsed.providers || [];
+          }
+      } catch(e) {}
+      return [];
   };
 
   const handleMagicRemoveBackground = async () => {
@@ -200,7 +214,7 @@ const ResultView: React.FC<ResultViewProps> = ({ result, images, onBack, onSave 
         setEditorImage(newBg);
         setEditorRotation(0); 
     } catch (e: any) {
-        setBgError("Fehler: " + (e.message || "Netzwerkproblem"));
+        setBgError((e.message || "Netzwerkproblem"));
     } finally {
         setIsProcessingBg(false);
     }
@@ -211,13 +225,14 @@ const ResultView: React.FC<ResultViewProps> = ({ result, images, onBack, onSave 
      setIsRecalculating(true);
      try {
         const apiKey = getApiKey();
-        const newData = await updatePriceAnalysis(apiKey, editData);
+        const providers = getSavedProviders();
+        const newData = await updatePriceAnalysis(apiKey, editData, providers);
         setEditData({
             ...editData,
             price_estimate: newData.price_estimate,
             shipping_cost: newData.shipping_cost,
             reasoning: newData.reasoning,
-            keywords: newData.keywords.length > 0 ? newData.keywords : editData.keywords
+            keywords: newData.keywords && newData.keywords.length > 0 ? newData.keywords : editData.keywords
         });
         alert("Preis neu berechnet!");
      } catch (e: any) {

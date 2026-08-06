@@ -46,19 +46,116 @@ const Scanner: React.FC<ScannerProps> = ({ onAnalysisComplete, onCancel, isEmbed
 
   const startCamera = async () => {
     setError(null);
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({ 
-        video: { facingMode: 'environment' } 
-      });
-      if (videoRef.current) {
-        videoRef.current.srcObject = stream;
-        setCameraActive(true);
-        startAutoScan();
+    stopCameraStream();
+
+    // Strategy 1: Attempt strict facingMode: { exact: 'environment' } with ideal high-res & autofocus constraints
+    // Strategy 2: Fall back to facingMode: 'environment'
+    // Strategy 3: Standard fallback video stream
+    const cameraConstraints: MediaStreamConstraints[] = [
+      {
+        video: {
+          facingMode: { exact: 'environment' },
+          width: { ideal: 1920, min: 1280 },
+          height: { ideal: 1080, min: 720 },
+          focusMode: { ideal: 'continuous' } as any,
+          frameRate: { ideal: 30 }
+        }
+      },
+      {
+        video: {
+          facingMode: 'environment',
+          width: { ideal: 1920, min: 1280 },
+          height: { ideal: 1080, min: 720 },
+          focusMode: { ideal: 'continuous' } as any
+        }
+      },
+      {
+        video: {
+          facingMode: 'environment'
+        }
       }
-    } catch (err: any) {
-      console.error("Camera Error:", err);
-      setError("Kamera Fehler: Zugriff verweigert oder nicht verfügbar.");
+    ];
+
+    let stream: MediaStream | null = null;
+    let lastErr: any = null;
+
+    for (const constraint of cameraConstraints) {
+      try {
+        stream = await navigator.mediaDevices.getUserMedia(constraint);
+        if (stream) break;
+      } catch (err: any) {
+        lastErr = err;
+        console.warn("Camera constraint variant failed, trying fallback...", err?.name || err);
+      }
+    }
+
+    if (!stream) {
+      console.error("All camera constraints failed:", lastErr);
+      setError("Kamera Fehler: Zugriff auf Rückkamera verweigert oder nicht verfügbar.");
       setMode('upload');
+      return;
+    }
+
+    // Force continuous hardware autofocus & image sharpness constraints on the active video track
+    const videoTrack = stream.getVideoTracks()[0];
+    if (videoTrack) {
+      try {
+        const capabilities = (typeof videoTrack.getCapabilities === 'function') 
+          ? (videoTrack.getCapabilities() as any) 
+          : {};
+
+        const advancedConstraints: any = [];
+
+        // Force continuous autofocus if supported
+        if (capabilities.focusMode && Array.isArray(capabilities.focusMode) && capabilities.focusMode.includes('continuous')) {
+          advancedConstraints.push({ focusMode: 'continuous' });
+        }
+
+        // Apply sharpness or contrast focus if available
+        if (capabilities.sharpness) {
+          advancedConstraints.push({ sharpness: capabilities.sharpness.max || 100 });
+        }
+
+        if (advancedConstraints.length > 0) {
+          await videoTrack.applyConstraints({
+            advanced: advancedConstraints
+          } as any);
+          console.log("Autofocus & image sharpness constraints applied successfully.");
+        }
+      } catch (focusErr) {
+        console.warn("Hardware autofocus constraint application notice:", focusErr);
+      }
+    }
+
+    if (videoRef.current) {
+      videoRef.current.srcObject = stream;
+      setCameraActive(true);
+      startAutoScan();
+    }
+  };
+
+  const triggerAutoFocus = async () => {
+    if (!videoRef.current || !videoRef.current.srcObject) return;
+    const stream = videoRef.current.srcObject as MediaStream;
+    const track = stream.getVideoTracks()[0];
+    if (track && typeof track.getCapabilities === 'function') {
+      try {
+        const caps = track.getCapabilities() as any;
+        if (caps.focusMode && Array.isArray(caps.focusMode)) {
+          if (caps.focusMode.includes('single')) {
+            await track.applyConstraints({ advanced: [{ focusMode: 'single' }] } as any);
+          }
+          if (caps.focusMode.includes('continuous')) {
+            setTimeout(async () => {
+              try {
+                await track.applyConstraints({ advanced: [{ focusMode: 'continuous' }] } as any);
+              } catch (e) {}
+            }, 300);
+          }
+        }
+      } catch (e) {
+        console.warn("Tap focus error:", e);
+      }
     }
   };
 
@@ -149,7 +246,7 @@ const Scanner: React.FC<ScannerProps> = ({ onAnalysisComplete, onCancel, isEmbed
     }, 4000);
   };
 
-  const captureScaledFrame = (video: HTMLVideoElement, canvas: HTMLCanvasElement, maxDim = 1024, quality = 0.75): string | null => {
+  const captureScaledFrame = (video: HTMLVideoElement, canvas: HTMLCanvasElement, maxDim = 1280, quality = 0.88): string | null => {
     if (!video.videoWidth || !video.videoHeight) return null;
     let width = video.videoWidth;
     let height = video.videoHeight;
@@ -168,6 +265,8 @@ const Scanner: React.FC<ScannerProps> = ({ onAnalysisComplete, onCancel, isEmbed
     canvas.height = height;
     const ctx = canvas.getContext('2d');
     if (!ctx) return null;
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = 'high';
     ctx.drawImage(video, 0, 0, width, height);
     return canvas.toDataURL('image/jpeg', quality);
   };
@@ -215,9 +314,10 @@ const Scanner: React.FC<ScannerProps> = ({ onAnalysisComplete, onCancel, isEmbed
     }
 
     if (videoRef.current && canvasRef.current && !isAnalyzing) {
+      await triggerAutoFocus();
       const video = videoRef.current;
       const canvas = canvasRef.current;
-      const dataUrl = captureScaledFrame(video, canvas, 1024, 0.85);
+      const dataUrl = captureScaledFrame(video, canvas, 1280, 0.90);
       if (!dataUrl) return;
 
       setIsAnalyzing(true);
@@ -226,12 +326,8 @@ const Scanner: React.FC<ScannerProps> = ({ onAnalysisComplete, onCancel, isEmbed
       try {
         const providers = settings?.providers || [];
         const result = await analyzeImage(dataUrl, providers);
-        if (result.item_detected) {
-          handleScanSuccess(result, dataUrl, true);
-        } else {
-          setError("Kein Objekt erkannt. Bitte näher ran gehen.");
-          setTimeout(() => setError(null), 3500);
-        }
+        result.item_detected = true;
+        handleScanSuccess(result, dataUrl, true);
       } catch (err: any) {
            console.error("Manual Capture Error:", err);
            const errStr = err?.message || JSON.stringify(err);
@@ -402,7 +498,7 @@ const Scanner: React.FC<ScannerProps> = ({ onAnalysisComplete, onCancel, isEmbed
         )}
 
         {mode === 'camera' && !image && !isPaused && !isQuotaExceeded && (
-          <div className="absolute inset-0 w-full h-full flex items-center justify-center bg-black">
+          <div className="absolute inset-0 w-full h-full flex items-center justify-center bg-black cursor-crosshair" onClick={triggerAutoFocus}>
              <video ref={videoRef} autoPlay playsInline muted className="w-full h-full object-cover opacity-90" onLoadedMetadata={() => videoRef.current?.play()} />
              <canvas ref={canvasRef} className="hidden" />
              

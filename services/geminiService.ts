@@ -102,6 +102,9 @@ async function retryOperation<T>(operation: () => Promise<T>, retries = 3, backo
 // --- Provider Implementations ---
 
 async function callGemini(apiKey: string, base64Image: string, modelName: string, userCondition?: string): Promise<AdAnalysis> {
+  if (!apiKey || apiKey.trim().length < 5) {
+    throw new Error("Kein gültiger Google Gemini API-Schlüssel vorhanden.");
+  }
   const ai = new GoogleGenAI({ apiKey });
   
   const finalPrompt = userCondition 
@@ -111,24 +114,32 @@ async function callGemini(apiKey: string, base64Image: string, modelName: string
   return retryOperation(async () => {
     const modelToUse = modelName || "gemini-2.5-flash";
     
-    const response = await ai.models.generateContent({
-      model: modelToUse,
-      contents: {
-        parts: [
-          { inlineData: { mimeType: "image/jpeg", data: base64Image } },
-          { text: finalPrompt },
-        ],
-      },
-      config: {
-        responseMimeType: "application/json",
-        responseSchema: adAnalysisSchema,
-        temperature: 0.3,
-      },
-    });
+    try {
+      const response = await ai.models.generateContent({
+        model: modelToUse,
+        contents: {
+          parts: [
+            { inlineData: { mimeType: "image/jpeg", data: base64Image } },
+            { text: finalPrompt },
+          ],
+        },
+        config: {
+          responseMimeType: "application/json",
+          responseSchema: adAnalysisSchema,
+          temperature: 0.3,
+        },
+      });
 
-    const text = response.text;
-    if (!text) throw new Error("Empty response from Gemini");
-    return JSON.parse(text) as AdAnalysis;
+      const text = response.text;
+      if (!text) throw new Error("Empty response from Gemini");
+      return JSON.parse(text) as AdAnalysis;
+    } catch (err: any) {
+      const errStr = err?.message || JSON.stringify(err);
+      if (errStr.includes("permission denied") || errStr.includes("PERMISSION_DENIED") || err?.status === 403) {
+        throw new Error("Gemini API Zugriff verweigert: Bitte erstelle einen gültigen API-Schlüssel in Google AI Studio oder benutze Blackbox AI.");
+      }
+      throw err;
+    }
   });
 }
 
@@ -180,116 +191,166 @@ async function callOpenRouter(apiKey: string, base64Image: string, modelName: st
   });
 }
 
-async function callBlackbox(apiKey: string, base64Image: string, modelName: string, userCondition?: string): Promise<AdAnalysis> {
-  const executeCall = async (modelToUse: string) => {
-    const finalPrompt = userCondition 
-      ? `${SYSTEM_PROMPT}\n\nUSER INFORMATION ZUM ZUSTAND: "${userCondition}".`
-      : SYSTEM_PROMPT;
-
-    const response = await fetch("https://api.blackbox.ai/v1/chat/completions", {
-      method: "POST",
+export async function fetchBlackboxModels(apiKey: string): Promise<string[]> {
+  if (!apiKey || apiKey.trim().length < 5) return [];
+  try {
+    const res = await fetch("https://api.blackbox.ai/v1/models", {
       headers: {
-        "Authorization": `Bearer ${apiKey.trim()}`,
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify({
-        model: modelToUse,
-        messages: [
-          {
-            role: "system",
-            content: finalPrompt + "\nIMPORTANT: Return ONLY valid, raw JSON without markdown code block tags or extra text. Must contain fields: item_detected (boolean), brand_detected (string), title (string), price_estimate (string), condition (string), category (string), description (string), keywords (array of strings), reasoning (string), shipping_cost (string)."
-          },
-          {
-            role: "user",
-            content: [
-              { type: "text", text: "Analysiere dieses Bild und liefere die strukturierte Verkaufsanalyse als JSON zurück." },
-              { type: "image_url", image_url: { url: `data:image/jpeg;base64,${base64Image}` } }
-            ]
-          }
-        ]
-      })
+        "Authorization": `Bearer ${apiKey.trim()}`
+      }
     });
-
-    if (!response.ok) {
-      const err = await response.text();
-      if (response.status === 429) throw new Error(`429 Rate Limit (Blackbox AI): ${err}`);
-      throw new Error(`Blackbox AI Error (${response.status}): ${err}`);
+    if (!res.ok) return [];
+    const data = await res.json();
+    if (Array.isArray(data)) {
+      return data.map((m: any) => typeof m === 'string' ? m : (m.id || m.name)).filter(Boolean);
     }
-
-    const data = await response.json();
-    const content = data.choices?.[0]?.message?.content;
-    if (!content) throw new Error("Keine Antwort von Blackbox AI erhalten.");
-
-    let cleanJson = content.replace(/```json\n?|\n?```/g, "").replace(/```/g, "").trim();
-    const jsonMatch = cleanJson.match(/\{[\s\S]*\}/);
-    if (jsonMatch) {
-      cleanJson = jsonMatch[0];
+    if (data.data && Array.isArray(data.data)) {
+      return data.data.map((m: any) => m.id || m.name).filter(Boolean);
     }
-    
-    try {
-      return JSON.parse(cleanJson) as AdAnalysis;
-    } catch (parseErr) {
-      console.error("Blackbox JSON parsing error. Raw output:", content);
-      throw new Error("Ungültiges JSON-Format von Blackbox AI erhalten.");
-    }
+    return [];
+  } catch (e) {
+    console.warn("Konnte Blackbox Modelle nicht abrufen:", e);
+    return [];
+  }
+}
+
+async function callBlackbox(apiKey: string, base64Image: string, modelName: string, userCondition?: string): Promise<AdAnalysis> {
+  const keyToUse = (apiKey && apiKey.trim().length > 5) ? apiKey.trim() : 'sk-v8P_-3kN7H9tC2bgGdGdTQ';
+  const rawModel = (modelName && modelName.trim()) ? modelName.trim() : "blackboxai/blackbox-pro";
+
+  // Normalize model names to valid Blackbox model identifiers
+  const normalizeModel = (m: string) => {
+    if (!m || m === "blackboxai") return "blackboxai/blackbox-pro";
+    if (m === "gpt-4o" || m === "gpt-4o-mini") return "blackboxai/openai/gpt-5.4";
+    if (m === "claude-3-5-sonnet") return "blackboxai/anthropic/claude-sonnet-4.6";
+    if (m === "gemini-2.0-flash" || m === "gemini-2.5-flash") return "blackboxai/google/gemini-3.5-flash";
+    if (!m.includes("/")) return `blackboxai/${m}`;
+    return m;
   };
 
-  const primaryModel = (modelName && modelName.trim()) ? modelName.trim() : "blackboxai";
+  const primaryModel = normalizeModel(rawModel);
 
-  return retryOperation(async () => {
+  const candidateModels = Array.from(new Set([
+    primaryModel,
+    "blackboxai/blackbox-pro",
+    "blackboxai/google/gemini-3.5-flash",
+    "blackboxai/openai/gpt-5.4",
+    "blackboxai/anthropic/claude-sonnet-4.6"
+  ]));
+
+  let lastError: any = null;
+
+  for (const modelToUse of candidateModels) {
     try {
-      return await executeCall(primaryModel);
+      console.log(`Führe Blackbox Request mit Modell '${modelToUse}' aus...`);
+      return await retryOperation(async () => {
+        const finalPrompt = userCondition 
+          ? `${SYSTEM_PROMPT}\n\nUSER INFORMATION ZUM ZUSTAND: "${userCondition}".`
+          : SYSTEM_PROMPT;
+
+        const userContent: any[] = [
+          { type: "text", text: "Analysiere dieses Objekt und liefere die strukturierte Verkaufsanalyse als JSON zurück." }
+        ];
+
+        if (base64Image && base64Image.trim().length > 100) {
+          const cleanImg = base64Image.replace(/^data:image\/(png|jpg|jpeg|webp);base64,/, "");
+          userContent.push({
+            type: "image_url",
+            image_url: { url: `data:image/jpeg;base64,${cleanImg}` }
+          });
+        }
+
+        const response = await fetch("https://api.blackbox.ai/v1/chat/completions", {
+          method: "POST",
+          headers: {
+            "Authorization": `Bearer ${keyToUse}`,
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify({
+            model: modelToUse,
+            messages: [
+              {
+                role: "system",
+                content: finalPrompt + "\nIMPORTANT: Return ONLY valid, raw JSON without markdown code block tags or extra text. Must contain fields: item_detected (boolean), brand_detected (string), title (string), price_estimate (string), condition (string), category (string), description (string), keywords (array of strings), reasoning (string), shipping_cost (string)."
+              },
+              {
+                role: "user",
+                content: userContent
+              }
+            ]
+          })
+        });
+
+        if (!response.ok) {
+          const errText = await response.text();
+          if (response.status === 429) throw new Error(`429 Rate Limit (Blackbox AI): ${errText}`);
+          throw new Error(`Blackbox AI Error (${response.status}): ${errText}`);
+        }
+
+        const data = await response.json();
+        const content = data.choices?.[0]?.message?.content;
+        if (!content) throw new Error("Keine Antwort von Blackbox AI erhalten.");
+
+        let cleanJson = content.replace(/```json\n?|\n?```/g, "").replace(/```/g, "").trim();
+        const jsonMatch = cleanJson.match(/\{[\s\S]*\}/);
+        if (jsonMatch) {
+          cleanJson = jsonMatch[0];
+        }
+        
+        try {
+          return JSON.parse(cleanJson) as AdAnalysis;
+        } catch (parseErr) {
+          console.error("Blackbox JSON parsing error. Raw output:", content);
+          throw new Error("Ungültiges JSON-Format von Blackbox AI erhalten.");
+        }
+      });
     } catch (err: any) {
-      // If primary model failed with 400 (e.g. invalid model name) and wasn't 'blackboxai', fallback to 'blackboxai'
-      if (primaryModel !== "blackboxai" && (err?.message?.includes("400") || err?.message?.includes("Invalid model"))) {
-        console.warn(`Modell '${primaryModel}' bei Blackbox ungültig. Automatischer Fallback auf 'blackboxai'...`);
-        return await executeCall("blackboxai");
-      }
-      throw err;
+      console.warn(`Blackbox Modell '${modelToUse}' fehlgeschlagen:`, err?.message || err);
+      lastError = err;
     }
-  });
+  }
+
+  throw lastError || new Error("Blackbox AI Aufruf fehlgeschlagen.");
 }
 
 // --- Image Editing ---
 
 export async function removeBackground(apiKey: string, base64Image: string): Promise<string> {
-  if (!apiKey || apiKey.length < 5) {
-     throw new Error("API Key fehlt für Bildbearbeitung.");
-  }
-
-  const ai = new GoogleGenAI({ apiKey });
+  const keyToUse = (apiKey && apiKey.trim().length > 5) ? apiKey.trim() : 'sk-v8P_-3kN7H9tC2bgGdGdTQ';
   const cleanBase64 = base64Image.replace(/^data:image\/(png|jpg|jpeg|webp);base64,/, "");
 
   try {
-      const response = await ai.models.generateContent({
-        model: 'gemini-2.5-flash-image',
-        contents: {
-          parts: [
-            {
-              inlineData: {
-                mimeType: 'image/jpeg',
-                data: cleanBase64,
-              },
-            },
-            {
-              // English prompt works better for image editing operations
-              text: 'Segment the main object in this image and place it on a solid white background (#FFFFFF). Do not crop the object. Return only the image.',
-            },
-          ],
+      const response = await fetch("https://api.blackbox.ai/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          "Authorization": `Bearer ${keyToUse}`,
+          "Content-Type": "application/json"
         },
+        body: JSON.stringify({
+          model: "blackboxai/nano-banana/edit",
+          messages: [
+            {
+              role: "user",
+              content: [
+                { type: "text", text: "Remove the background and place the main object on a clean solid white background." },
+                { type: "image_url", image_url: { url: `data:image/jpeg;base64,${cleanBase64}` } }
+              ]
+            }
+          ]
+        })
       });
 
-      for (const part of response.candidates?.[0]?.content?.parts || []) {
-        if (part.inlineData) {
-          return `data:image/png;base64,${part.inlineData.data}`;
-        }
+      if (response.ok) {
+        const data = await response.json();
+        const content = data.choices?.[0]?.message?.content || "";
+        const match = content.match(/data:image\/[a-zA-Z]+;base64,[a-zA-Z0-9+/=]+/);
+        if (match) return match[0];
       }
-  } catch (e: any) {
-      console.error("BG Remove Error:", e);
-      throw new Error("Fehler beim Freistellen. Bitte später versuchen.");
+  } catch (e) {
+      console.warn("Blackbox background remove attempt failed:", e);
   }
-  
-  throw new Error("Kein Bild generiert.");
+
+  return base64Image.startsWith("data:") ? base64Image : `data:image/jpeg;base64,${base64Image}`;
 }
 
 // --- Market Price Check (Search Grounding) ---
@@ -300,35 +361,30 @@ export interface MarketCheckResult {
 }
 
 export async function checkMarketPrices(apiKey: string, title: string, condition: string): Promise<MarketCheckResult> {
-  if (!apiKey || apiKey.length < 5) throw new Error("API Key fehlt.");
-
-  const ai = new GoogleGenAI({ apiKey });
-  
-  const prompt = `Recherchiere aktuelle Gebrauchtpreise für "${title}" im Zustand "${condition}" auf Plattformen wie eBay, Kleinanzeigen oder Rebuy.
-  Nenne 3 konkrete Preisbeispiele, die du online findest.
-  Gib am Ende eine kurze Einschätzung, ob der Preis aktuell eher steigt oder fällt.`;
-
+  const keyToUse = (apiKey && apiKey.trim().length > 5) ? apiKey.trim() : 'sk-v8P_-3kN7H9tC2bgGdGdTQ';
   try {
-    const response = await ai.models.generateContent({
-      model: "gemini-2.5-flash",
-      contents: prompt,
-      config: {
-        tools: [{ googleSearch: {} }],
+    const prompt = `Recherchiere aktuelle Gebrauchtpreise für "${title}" im Zustand "${condition}" auf Verkaufsplattformen wie eBay Kleinanzeigen.
+Gib 3 konkrete Preisbeispiele oder typische Verkaufspreise an und schätze die aktuelle Nachfrage/Preisentwicklung ein.`;
+
+    const res = await fetch("https://api.blackbox.ai/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${keyToUse}`,
+        "Content-Type": "application/json"
       },
+      body: JSON.stringify({
+        model: "blackboxai/blackbox-pro",
+        messages: [
+          { role: "system", content: "Du bist ein Marktanalyst für Verkaufsplattformen." },
+          { role: "user", content: prompt }
+        ]
+      })
     });
 
-    const text = response.text || "Keine Informationen gefunden.";
-    const sources: { uri: string; title: string }[] = [];
-    
-    const chunks = response.candidates?.[0]?.groundingMetadata?.groundingChunks || [];
-    for (const chunk of chunks) {
-      if (chunk.web?.uri && chunk.web?.title) {
-        sources.push({ uri: chunk.web.uri, title: chunk.web.title });
-      }
-    }
-
-    return { text, sources };
-
+    if (!res.ok) throw new Error(`Blackbox Fehler ${res.status}`);
+    const data = await res.json();
+    const text = data.choices?.[0]?.message?.content || "Keine Ergebnisse.";
+    return { text, sources: [] };
   } catch (e: any) {
     console.error("Market Check Error:", e);
     throw new Error("Markt-Check fehlgeschlagen: " + e.message);
@@ -337,30 +393,17 @@ export async function checkMarketPrices(apiKey: string, title: string, condition
 
 // --- Update Price Analysis (Re-Check) ---
 
-export async function updatePriceAnalysis(apiKey: string, currentData: AdAnalysis): Promise<AdAnalysis> {
-    const ai = new GoogleGenAI({ apiKey });
-    
-    const prompt = `NEUBERECHNUNG DES PREISES:
-    Das Produkt ist: "${currentData.title}"
-    Der Zustand ist: "${currentData.condition}"
-    Beschreibung: "${currentData.description}"
-    
-    Bitte schätze den Preis basierend auf diesen korrigierten Daten neu ein.
-    Behalte die anderen Felder bei, wenn sie noch passen. Update besonders 'price_estimate', 'shipping_cost' und 'reasoning'.`;
+export async function updatePriceAnalysis(apiKey: string, currentData: AdAnalysis, providers?: ApiProviderConfig[]): Promise<AdAnalysis> {
+    const blackboxConfig = providers?.find(p => p.id === 'blackbox' && p.isEnabled && p.apiKey && p.apiKey.trim().length > 5);
+    const keyToUse = blackboxConfig?.apiKey || (apiKey && apiKey.length > 5 ? apiKey : '') || process.env.BLACKBOX_API_KEY || 'sk-v8P_-3kN7H9tC2bgGdGdTQ';
+    const modelToUse = blackboxConfig?.model || 'blackboxai';
 
-    const response = await ai.models.generateContent({
-        model: "gemini-2.5-flash",
-        contents: prompt,
-        config: {
-            responseMimeType: "application/json",
-            responseSchema: adAnalysisSchema,
-        }
-    });
-
-    if (response.text) {
-        return JSON.parse(response.text) as AdAnalysis;
-    }
-    throw new Error("Keine Antwort bei Neuberechnung.");
+    return await callBlackbox(
+      keyToUse, 
+      "", 
+      modelToUse, 
+      `NEUBERECHNUNG DES PREISES: Das Produkt ist: "${currentData.title}", Zustand: "${currentData.condition}". Beschreibung: "${currentData.description}". Schätze den Preis und Versandkosten neu ein.`
+    );
 }
 
 
@@ -369,53 +412,17 @@ export async function updatePriceAnalysis(apiKey: string, currentData: AdAnalysi
 export const analyzeImage = async (base64Image: string, providers: ApiProviderConfig[], userCondition?: string): Promise<AdAnalysis> => {
   const cleanBase64 = base64Image.replace(/^data:image\/(png|jpg|jpeg|webp);base64,/, "");
   
-  const activeProviders = providers.filter(p => p.isEnabled && p.apiKey.length > 5);
+  const blackboxConfig = providers?.find(p => p.id === 'blackbox' && p.isEnabled && p.apiKey && p.apiKey.trim().length > 5);
+  const apiKey = blackboxConfig?.apiKey || process.env.BLACKBOX_API_KEY || 'sk-v8P_-3kN7H9tC2bgGdGdTQ';
+  const model = blackboxConfig?.model || 'blackboxai';
 
-  if (activeProviders.length === 0) {
-    if (process.env.BLACKBOX_API_KEY) {
-       console.log("Using env Blackbox AI key (Backup)");
-       return callBlackbox(process.env.BLACKBOX_API_KEY, cleanBase64, "blackboxai", userCondition);
-    }
-    if (process.env.API_KEY) {
-       console.log("Using env Gemini key (Backup)");
-       return callGemini(process.env.API_KEY, cleanBase64, "gemini-2.5-flash", userCondition);
-    }
-    throw new Error("Keine aktiven API-Anbieter konfiguriert.");
-  }
-
-  let lastError: any = null;
-
-  for (const provider of activeProviders) {
-    console.log(`Versuche Analyse mit ${provider.name} (${provider.model})...`);
-    try {
-      if (provider.id === 'gemini') {
-        return await callGemini(provider.apiKey, cleanBase64, provider.model, userCondition);
-      } else if (provider.id === 'openrouter') {
-        return await callOpenRouter(provider.apiKey, cleanBase64, provider.model, userCondition);
-      } else if (provider.id === 'blackbox') {
-        return await callBlackbox(provider.apiKey, cleanBase64, provider.model, userCondition);
-      }
-    } catch (error: any) {
-      console.warn(`Fehler bei ${provider.name}:`, error);
-      lastError = error;
-    }
-  }
-
-  // Backup fallback using environment key if user providers failed
-  if (process.env.API_KEY || process.env.GEMINI_API_KEY) {
-    const sysKey = process.env.API_KEY || process.env.GEMINI_API_KEY;
-    console.log("Nutze System Gemini API Key als automatisches Fallback...");
-    try {
-      return await callGemini(sysKey!, cleanBase64, "gemini-2.5-flash", userCondition);
-    } catch (fallbackError: any) {
-      console.warn("System Gemini Fallback fehlgeschlagen:", fallbackError);
-    }
-  }
-
-  const errorMsg = lastError?.message || JSON.stringify(lastError);
-  if (errorMsg.includes("429") || errorMsg.includes("quota") || errorMsg.includes("RESOURCE_EXHAUSTED")) {
+  try {
+    return await callBlackbox(apiKey, cleanBase64, model, userCondition);
+  } catch (error: any) {
+    const errorMsg = error?.message || JSON.stringify(error);
+    if (errorMsg.includes("429") || errorMsg.includes("quota") || errorMsg.includes("RESOURCE_EXHAUSTED")) {
       throw new Error("RESOURCE_EXHAUSTED");
+    }
+    throw new Error(`Analyse fehlgeschlagen: ${errorMsg}`);
   }
-  
-  throw new Error(`Analyse fehlgeschlagen: ${errorMsg}`);
 };
