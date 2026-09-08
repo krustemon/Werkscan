@@ -4,6 +4,9 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Werkaholic AI</title>
+    <meta name="description" content="Intelligenter Produktinserate-Scanner mit automatischer Tradera-Marktplatz-Integration und Bilderkennung" />
+    <meta property="og:title" content="Werkaholic AI" />
+    <meta property="og:description" content="Intelligenter Produktinserate-Scanner mit automatischer Tradera-Marktplatz-Integration und Bilderkennung" />
     <!-- PWA & Mobile Web App Settings -->
     <link rel="manifest" href="/manifest.json" />
     <link rel="icon" type="image/svg+xml" href="/icon.svg" />
@@ -16,11 +19,18 @@
     
     <script>
       if ('serviceWorker' in navigator) {
-        window.addEventListener('load', () => {
-          navigator.serviceWorker.register('/sw.js').catch((err) => {
-            console.log('SW registration notice:', err);
+        if (window.self !== window.top) {
+          // Inside iframe (AI Studio preview): unregister existing service workers to avoid stale caches and auth redirect issues
+          navigator.serviceWorker.getRegistrations().then((registrations) => {
+            for (const r of registrations) r.unregister();
+          }).catch(() => {});
+        } else {
+          window.addEventListener('load', () => {
+            navigator.serviceWorker.register('/sw.js').catch((err) => {
+              console.log('SW registration notice:', err);
+            });
           });
-        });
+        }
       }
     </script>
     <script src="https://cdn.tailwindcss.com"></script>

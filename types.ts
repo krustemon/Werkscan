@@ -29,6 +29,7 @@ export interface HistoryItem {
   additionalImages?: string[]; // Array of extra images
   date: string;
   analysis: AdAnalysis;
+  traderaListing?: TraderaListingResult;
 }
 
 export type ApiProviderType = 'blackbox';
@@ -41,6 +42,39 @@ export interface ApiProviderConfig {
   model: string;
 }
 
+export interface TraderaConfig {
+  appId: string;
+  appKey: string;
+  publicKey: string;
+  authorizationUrl: string;
+  token: string;
+  userId: string;
+  tokenExpires?: string;
+  isConnected: boolean;
+  defaultItemType: 1 | 3; // 1 = Auction, 3 = Fixed Price (Endast Köp Nu)
+  defaultDuration: number; // 7, 10, 14, 30
+  defaultShippingProviderId: number; // 6 = Annat fraktsätt, 2 = DHL, 8 = Avhämtning
+  defaultShippingCost: number; // in SEK
+  autoCommit: boolean;
+  currencyRateEurToSek: number; // default ~11.5 SEK/EUR
+}
+
+export interface TraderaCategory {
+  id: number;
+  name: string;
+  fullName?: string;
+}
+
+export interface TraderaListingResult {
+  requestId: number;
+  itemId: number;
+  url: string;
+  title: string;
+  price: number;
+  isDraft: boolean;
+}
+
 export interface AppSettings {
   providers: ApiProviderConfig[];
+  tradera?: TraderaConfig;
 }

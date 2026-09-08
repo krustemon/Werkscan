@@ -1,9 +1,18 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { AdAnalysis } from '../types';
-import { Copy, Check, TrendingUp, Tag, Share2, ArrowLeft, ExternalLink, ShoppingBag, FileDown, Archive, Pencil, Save, X, Cloud, Loader2, Plus, Image as ImageIcon, Trash2, RotateCw, Wand2, SlidersHorizontal, ArrowRight, Eraser, AlertCircle, Globe, Truck, Scale } from 'lucide-react';
+import { AdAnalysis, TraderaConfig, TraderaListingResult } from '../types';
+import { Copy, Check, TrendingUp, Tag, Share2, ArrowLeft, ExternalLink, ShoppingBag, FileDown, Archive, Pencil, Save, X, Cloud, Loader2, Plus, Image as ImageIcon, Trash2, RotateCw, Wand2, SlidersHorizontal, ArrowRight, Eraser, AlertCircle, Globe, Truck, Scale, CheckCircle2, Settings as SettingsIcon } from 'lucide-react';
 import { jsPDF } from "jspdf";
 import JSZip from "jszip";
 import { removeBackground, checkMarketPrices, MarketCheckResult, updatePriceAnalysis } from '../services/geminiService';
+import { 
+  getTraderaConfig, 
+  saveTraderaConfig, 
+  createTraderaListing, 
+  calculateTraderaPrice, 
+  suggestTraderaCategory, 
+  getTraderaAuthUrl, 
+  parseTraderaCallback 
+} from '../services/traderaService';
 
 interface ResultViewProps {
   result: AdAnalysis;
@@ -44,6 +53,20 @@ const ResultView: React.FC<ResultViewProps> = ({ result, images, onBack, onSave 
   // Auto-save
   const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved'>('idle');
   const lastSavedData = useRef<string>(JSON.stringify(result) + JSON.stringify(images));
+
+  // Tradera State
+  const [isTraderaListing, setIsTraderaListing] = useState(false);
+  const [traderaProgress, setTraderaProgress] = useState<{ step: number; total: number; message: string } | null>(null);
+  const [traderaResult, setTraderaResult] = useState<TraderaListingResult | null>(null);
+  const [traderaError, setTraderaError] = useState<string | null>(null);
+  const [showTraderaAuthModal, setShowTraderaAuthModal] = useState(false);
+  const [showTraderaOptionsModal, setShowTraderaOptionsModal] = useState(false);
+  const [authPasteInput, setAuthPasteInput] = useState('');
+  const [customTraderaDuration, setCustomTraderaDuration] = useState<number>(7);
+  const [customTraderaType, setCustomTraderaType] = useState<number>(1);
+  const [customTraderaStartPrice, setCustomTraderaStartPrice] = useState<number>(0);
+  const [customTraderaBuyNow, setCustomTraderaBuyNow] = useState<number>(0);
+  const [customTraderaAutoCommit, setCustomTraderaAutoCommit] = useState<boolean>(true);
 
   // Auto-Download Logic for NEW items
   useEffect(() => {
@@ -362,6 +385,97 @@ const ResultView: React.FC<ResultViewProps> = ({ result, images, onBack, onSave 
     } catch (e) { alert("Zip Fehler"); } finally { setIsGenerating(false); }
   };
 
+  // --- TRADERA LISTING AUTOMATION ---
+  const handleTraderaCreateClick = () => {
+    const config = getTraderaConfig();
+    if (!config.token || !config.userId) {
+      setShowTraderaAuthModal(true);
+      return;
+    }
+    executeTraderaListing();
+  };
+
+  const handleOpenTraderaOptions = () => {
+    const config = getTraderaConfig();
+    const sourceData = isEditing ? editData : result;
+    const priceCalc = calculateTraderaPrice(sourceData.price_estimate, config.currencyRateEurToSek);
+    setCustomTraderaType(config.defaultItemType || 1);
+    setCustomTraderaDuration(config.defaultDuration || 7);
+    setCustomTraderaStartPrice(priceCalc.startPrice);
+    setCustomTraderaBuyNow(priceCalc.buyItNowPrice);
+    setCustomTraderaAutoCommit(config.autoCommit ?? true);
+    setShowTraderaOptionsModal(true);
+  };
+
+  const executeTraderaListing = async (overrideOptions?: {
+    itemType?: number;
+    duration?: number;
+    startPrice?: number;
+    buyItNowPrice?: number;
+    autoCommit?: boolean;
+  }) => {
+    const config = getTraderaConfig();
+    if (!config.token || !config.userId) {
+      setShowTraderaAuthModal(true);
+      return;
+    }
+
+    const sourceData = isEditing ? editData : result;
+    setIsTraderaListing(true);
+    setTraderaError(null);
+    setTraderaResult(null);
+
+    try {
+      const listingRes = await createTraderaListing(
+        sourceData,
+        localImages,
+        config,
+        {
+          itemType: overrideOptions?.itemType ?? config.defaultItemType,
+          duration: overrideOptions?.duration ?? config.defaultDuration,
+          startPrice: overrideOptions?.startPrice,
+          buyItNowPrice: overrideOptions?.buyItNowPrice,
+          autoCommit: overrideOptions?.autoCommit ?? config.autoCommit,
+          onProgress: (message, step, total) => {
+            setTraderaProgress({ step, total, message });
+          }
+        }
+      );
+      setTraderaResult(listingRes);
+      setShowTraderaOptionsModal(false);
+    } catch (err: any) {
+      setTraderaError(err.message || 'Fehler beim Erstellen des Tradera Inserats');
+    } finally {
+      setIsTraderaListing(false);
+      setTraderaProgress(null);
+    }
+  };
+
+  const handleApplyAuthAndList = () => {
+    if (!authPasteInput.trim()) return;
+    const cb = parseTraderaCallback(authPasteInput.trim());
+    let token = authPasteInput.trim();
+    let userId = '6760';
+
+    if (cb && cb.token) {
+      token = cb.token;
+      if (cb.userId) userId = cb.userId;
+    }
+
+    saveTraderaConfig({
+      token,
+      userId,
+      isConnected: true
+    });
+
+    setShowTraderaAuthModal(false);
+    setAuthPasteInput('');
+    // Sofort mit Inserats-Erstellung starten
+    setTimeout(() => {
+      executeTraderaListing();
+    }, 100);
+  };
+
   // Auto trigger download if enabled and fresh
   useEffect(() => {
      // This could be controlled by a prop or logic. For now, manual.
@@ -597,15 +711,105 @@ const ResultView: React.FC<ResultViewProps> = ({ result, images, onBack, onSave 
                 </div>
             </div>
             
+            {/* Tradera Error Banner */}
+            {traderaError && (
+              <div className="bg-red-950/60 border border-red-800 rounded-lg p-4 text-red-200 text-xs flex flex-col gap-2">
+                <div className="flex items-center gap-2 font-bold uppercase text-red-400">
+                  <AlertCircle className="w-4 h-4 shrink-0" />
+                  <span>Tradera Fehler</span>
+                </div>
+                <p className="leading-relaxed">{traderaError}</p>
+                <div className="flex gap-2 mt-1">
+                  <button
+                    type="button"
+                    onClick={() => executeTraderaListing()}
+                    className="px-3 py-1.5 bg-red-800 hover:bg-red-700 text-white rounded font-bold uppercase text-[11px]"
+                  >
+                    Erneut versuchen
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setShowTraderaAuthModal(true)}
+                    className="px-3 py-1.5 bg-stone-800 hover:bg-stone-700 text-stone-300 rounded uppercase text-[11px]"
+                  >
+                    Tradera-Zugang prüfen
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* Tradera Progress Banner */}
+            {isTraderaListing && traderaProgress && (
+              <div className="bg-oil-800 border border-rust-600/50 rounded-lg p-4 space-y-2 animate-pulse">
+                <div className="flex items-center justify-between text-xs">
+                  <span className="font-bold text-rust-400 uppercase flex items-center gap-2">
+                    <Loader2 className="w-4 h-4 animate-spin text-rust-500" />
+                    Tradera Automatisierung
+                  </span>
+                  <span className="font-mono text-stone-400 text-[11px]">
+                    Schritt {traderaProgress.step} von {traderaProgress.total}
+                  </span>
+                </div>
+                <p className="text-stone-300 text-xs font-medium">{traderaProgress.message}</p>
+                <div className="w-full h-1.5 bg-stone-900 rounded-full overflow-hidden">
+                  <div 
+                    className="h-full bg-rust-500 transition-all duration-300"
+                    style={{ width: `${Math.round((traderaProgress.step / traderaProgress.total) * 100)}%` }}
+                  ></div>
+                </div>
+              </div>
+            )}
+
             <div className="space-y-3 pb-24 md:pb-0">
-              <button onClick={handleKleinanzeigenExport} className="w-full py-4 bg-rust-600 hover:bg-rust-500 text-white rounded font-bold text-lg hidden md:flex items-center justify-center gap-2 shadow-lg shadow-rust-900/40 font-industrial tracking-widest uppercase">
-                  <ShoppingBag className="w-5 h-5" /> Inserieren
-              </button>
-              <div className="grid grid-cols-2 gap-3">
-                 <button onClick={handlePdfExport} disabled={isGenerating || isEditing} className="py-3 bg-oil-800 border border-stone-700 text-stone-300 hover:bg-stone-700 rounded font-medium flex items-center justify-center gap-2 text-sm uppercase">
+              {/* Haupt-Aktion: Auf Tradera erstellen */}
+              <div className="hidden md:flex gap-2">
+                <button 
+                  onClick={handleTraderaCreateClick} 
+                  disabled={isTraderaListing}
+                  className="flex-1 py-4 bg-rust-600 hover:bg-rust-500 disabled:opacity-50 text-white rounded font-bold text-lg flex items-center justify-center gap-2 shadow-lg shadow-rust-900/40 font-industrial tracking-widest uppercase transition-all"
+                >
+                  {isTraderaListing ? (
+                    <>
+                      <Loader2 className="w-5 h-5 animate-spin" />
+                      <span>Erstelle Tradera Inserat...</span>
+                    </>
+                  ) : (
+                    <>
+                      <ShoppingBag className="w-5 h-5" />
+                      <span>Auf Tradera erstellen</span>
+                    </>
+                  )}
+                </button>
+                <button
+                  type="button"
+                  onClick={handleOpenTraderaOptions}
+                  title="Tradera Inserats-Optionen anpassen"
+                  className="px-4 py-4 bg-oil-800 hover:bg-stone-700 text-stone-300 hover:text-white rounded border border-stone-700 flex items-center justify-center transition-colors"
+                >
+                  <SlidersHorizontal className="w-5 h-5" />
+                </button>
+              </div>
+
+              {/* Sekundär: Kleinanzeigen & Exporte */}
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                 <button 
+                   onClick={handleKleinanzeigenExport} 
+                   className="hidden md:flex py-3 bg-oil-800 border border-stone-700 text-stone-300 hover:bg-stone-700 hover:text-white rounded font-medium items-center justify-center gap-2 text-sm uppercase transition-colors"
+                 >
+                    <ExternalLink className="w-4 h-4" /> Kleinanzeigen
+                 </button>
+                 <button 
+                   onClick={handlePdfExport} 
+                   disabled={isGenerating || isEditing} 
+                   className="py-3 bg-oil-800 border border-stone-700 text-stone-300 hover:bg-stone-700 rounded font-medium flex items-center justify-center gap-2 text-sm uppercase"
+                 >
                     <FileDown className="w-4 h-4" /> PDF
                  </button>
-                 <button onClick={handleZipExport} disabled={isGenerating || isEditing} className="py-3 bg-oil-800 border border-stone-700 text-stone-300 hover:bg-stone-700 rounded font-medium flex items-center justify-center gap-2 text-sm uppercase">
+                 <button 
+                   onClick={handleZipExport} 
+                   disabled={isGenerating || isEditing} 
+                   className="py-3 bg-oil-800 border border-stone-700 text-stone-300 hover:bg-stone-700 rounded font-medium flex items-center justify-center gap-2 text-sm uppercase"
+                 >
                     <Archive className="w-4 h-4" /> ZIP
                  </button>
               </div>
@@ -614,9 +818,40 @@ const ResultView: React.FC<ResultViewProps> = ({ result, images, onBack, onSave 
       </div>
 
       <div className="md:hidden fixed bottom-0 left-0 right-0 bg-oil-900 border-t border-stone-800 p-4 shadow-2xl z-20 pb-safe-area">
-         <button onClick={handleKleinanzeigenExport} className="w-full py-3 bg-rust-600 text-white rounded font-bold text-lg flex items-center justify-center gap-2 shadow-lg uppercase font-industrial">
-              <ShoppingBag className="w-5 h-5" /> Inserieren
-          </button>
+         <div className="flex gap-2">
+           <button 
+             onClick={handleTraderaCreateClick} 
+             disabled={isTraderaListing}
+             className="flex-1 py-3 bg-rust-600 hover:bg-rust-500 disabled:opacity-50 text-white rounded font-bold text-base flex items-center justify-center gap-2 shadow-lg uppercase font-industrial"
+           >
+             {isTraderaListing ? (
+               <>
+                 <Loader2 className="w-4 h-4 animate-spin" />
+                 <span>Erstelle...</span>
+               </>
+             ) : (
+               <>
+                 <ShoppingBag className="w-5 h-5" />
+                 <span>Auf Tradera erstellen</span>
+               </>
+             )}
+           </button>
+           <button
+             type="button"
+             onClick={handleOpenTraderaOptions}
+             className="p-3 bg-stone-800 text-stone-300 rounded border border-stone-700 flex items-center justify-center"
+             title="Optionen"
+           >
+             <SlidersHorizontal className="w-4 h-4" />
+           </button>
+           <button 
+             onClick={handleKleinanzeigenExport} 
+             className="p-3 bg-stone-800 text-stone-300 rounded border border-stone-700 flex items-center justify-center"
+             title="Kleinanzeigen"
+           >
+             <ExternalLink className="w-4 h-4" />
+           </button>
+         </div>
       </div>
 
       {isEditorOpen && editorImage && (
@@ -675,6 +910,240 @@ const ResultView: React.FC<ResultViewProps> = ({ result, images, onBack, onSave 
                  </div>
               </div>
            </div>
+        </div>
+      )}
+
+      {/* Tradera Success Modal */}
+      {traderaResult && (
+        <div className="fixed inset-0 z-[110] flex items-center justify-center bg-black/90 p-4 animate-fade-in">
+          <div className="bg-oil-900 w-full max-w-md rounded-xl border border-emerald-700/80 p-6 space-y-5 shadow-2xl text-stone-200">
+            <div className="flex items-center gap-3">
+              <div className="p-2.5 rounded-full bg-emerald-950 border border-emerald-600 text-emerald-400">
+                <CheckCircle2 className="w-7 h-7" />
+              </div>
+              <div>
+                <h3 className="text-lg font-bold text-white font-industrial uppercase">
+                  Tradera Inserat erstellt!
+                </h3>
+                <p className="text-xs text-stone-400">
+                  {traderaResult.isDraft ? 'Als Entwurf gespeichert' : 'Erfolgreich live geschaltet'}
+                </p>
+              </div>
+            </div>
+
+            <div className="bg-stone-900/80 rounded-lg p-4 border border-stone-800 space-y-2 text-xs">
+              <div className="flex justify-between">
+                <span className="text-stone-500">Tradera Artikel-ID:</span>
+                <span className="font-mono font-bold text-white">#{traderaResult.itemId}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-stone-500">Titel:</span>
+                <span className="font-medium text-stone-200 truncate max-w-[200px]">{traderaResult.title}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-stone-500">Startpreis:</span>
+                <span className="font-bold text-rust-400">{traderaResult.price} SEK</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-stone-500">Status:</span>
+                <span className="text-emerald-400 font-bold uppercase text-[11px]">
+                  {traderaResult.isDraft ? 'Entwurf (Draft)' : 'Aktiv (Live)'}
+                </span>
+              </div>
+            </div>
+
+            <div className="flex flex-col gap-2 pt-2">
+              <a
+                href={traderaResult.url}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="w-full py-3 bg-rust-600 hover:bg-rust-500 text-white font-bold uppercase font-industrial text-center rounded flex items-center justify-center gap-2 shadow-lg shadow-rust-900/40"
+              >
+                <ExternalLink className="w-4 h-4" /> Inserat auf Tradera öffnen
+              </a>
+              <button
+                type="button"
+                onClick={() => setTraderaResult(null)}
+                className="w-full py-2.5 bg-stone-800 hover:bg-stone-700 text-stone-300 text-xs font-bold uppercase rounded border border-stone-700"
+              >
+                Schließen
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Tradera Auth Required Modal */}
+      {showTraderaAuthModal && (
+        <div className="fixed inset-0 z-[110] flex items-center justify-center bg-black/90 p-4 animate-fade-in">
+          <div className="bg-oil-900 w-full max-w-lg rounded-xl border border-stone-700 p-6 space-y-4 shadow-2xl text-stone-200">
+            <div className="flex items-center justify-between border-b border-stone-800 pb-3">
+              <div className="flex items-center gap-2">
+                <ShoppingBag className="w-5 h-5 text-rust-500" />
+                <h3 className="text-lg font-bold text-white font-industrial uppercase">
+                  Tradera Autorisierung
+                </h3>
+              </div>
+              <button onClick={() => setShowTraderaAuthModal(false)} className="text-stone-500 hover:text-white">
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <p className="text-xs text-stone-400 leading-relaxed">
+              Für das automatische Einstellen auf Tradera wird eine einmalige Benutzer-Autorisierung deines Tradera-Kontos benötigt (App-ID: 6760).
+            </p>
+
+            <div className="space-y-3 pt-1">
+              <div className="bg-stone-900 p-3 rounded border border-stone-800">
+                <span className="text-[11px] font-bold uppercase text-stone-400 block mb-1">Schritt 1: Bei Tradera anmelden</span>
+                <a
+                  href={getTraderaAuthUrl(getTraderaConfig())}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center gap-2 px-4 py-2 bg-rust-600 hover:bg-rust-500 text-white rounded text-xs font-bold uppercase font-industrial"
+                >
+                  <ExternalLink className="w-3.5 h-3.5" /> Tradera Login öffnen
+                </a>
+              </div>
+
+              <div className="bg-stone-900 p-3 rounded border border-stone-800 space-y-2">
+                <span className="text-[11px] font-bold uppercase text-stone-400 block">Schritt 2: Rückleitungs-URL oder Token einfügen</span>
+                <input
+                  type="text"
+                  placeholder="Kopierten Token oder Rückleitungs-URL hier einfügen"
+                  value={authPasteInput}
+                  onChange={(e) => setAuthPasteInput(e.target.value)}
+                  className="w-full bg-stone-950 border border-stone-700 rounded p-2.5 text-xs text-stone-200 font-mono focus:border-rust-500 outline-none"
+                />
+              </div>
+            </div>
+
+            <div className="flex gap-2 pt-2">
+              <button
+                type="button"
+                onClick={handleApplyAuthAndList}
+                disabled={!authPasteInput.trim()}
+                className="flex-1 py-3 bg-rust-600 hover:bg-rust-500 disabled:opacity-40 text-white text-xs font-bold uppercase font-industrial rounded flex items-center justify-center gap-2 shadow-lg shadow-rust-900/40"
+              >
+                <Check className="w-4 h-4" /> Speichern &amp; Inserat erstellen
+              </button>
+              <button
+                type="button"
+                onClick={() => setShowTraderaAuthModal(false)}
+                className="px-4 py-3 bg-stone-800 hover:bg-stone-700 text-stone-400 text-xs font-bold uppercase rounded border border-stone-700"
+              >
+                Abbrechen
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Tradera Options Modal */}
+      {showTraderaOptionsModal && (
+        <div className="fixed inset-0 z-[110] flex items-center justify-center bg-black/90 p-4 animate-fade-in">
+          <div className="bg-oil-900 w-full max-w-md rounded-xl border border-stone-700 p-6 space-y-4 shadow-2xl text-stone-200">
+            <div className="flex items-center justify-between border-b border-stone-800 pb-3">
+              <div className="flex items-center gap-2">
+                <SlidersHorizontal className="w-5 h-5 text-rust-500" />
+                <h3 className="text-lg font-bold text-white font-industrial uppercase">
+                  Tradera Optionen
+                </h3>
+              </div>
+              <button onClick={() => setShowTraderaOptionsModal(false)} className="text-stone-500 hover:text-white">
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="space-y-3 text-xs">
+              <div>
+                <label className="text-stone-400 block mb-1 uppercase font-bold text-[11px]">Inserat-Format</label>
+                <select
+                  value={customTraderaType}
+                  onChange={(e) => setCustomTraderaType(parseInt(e.target.value))}
+                  className="w-full bg-stone-900 border border-stone-700 rounded p-2.5 text-stone-200 outline-none focus:border-rust-500"
+                >
+                  <option value={1}>Auktion (ItemType 1)</option>
+                  <option value={3}>Festpreis / Köp Nu (ItemType 3)</option>
+                </select>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="text-stone-400 block mb-1 uppercase font-bold text-[11px]">Startpreis (SEK)</label>
+                  <input
+                    type="number"
+                    min="1"
+                    value={customTraderaStartPrice}
+                    onChange={(e) => setCustomTraderaStartPrice(parseFloat(e.target.value) || 0)}
+                    className="w-full bg-stone-900 border border-stone-700 rounded p-2 text-stone-200 outline-none focus:border-rust-500"
+                  />
+                </div>
+                <div>
+                  <label className="text-stone-400 block mb-1 uppercase font-bold text-[11px]">Sofortkauf (SEK)</label>
+                  <input
+                    type="number"
+                    min="0"
+                    value={customTraderaBuyNow}
+                    onChange={(e) => setCustomTraderaBuyNow(parseFloat(e.target.value) || 0)}
+                    className="w-full bg-stone-900 border border-stone-700 rounded p-2 text-stone-200 outline-none focus:border-rust-500"
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label className="text-stone-400 block mb-1 uppercase font-bold text-[11px]">Laufzeit</label>
+                <select
+                  value={customTraderaDuration}
+                  onChange={(e) => setCustomTraderaDuration(parseInt(e.target.value))}
+                  className="w-full bg-stone-900 border border-stone-700 rounded p-2.5 text-stone-200 outline-none focus:border-rust-500"
+                >
+                  <option value={7}>7 Tage</option>
+                  <option value={10}>10 Tage</option>
+                  <option value={14}>14 Tage</option>
+                  <option value={30}>30 Tage</option>
+                </select>
+              </div>
+
+              <div className="pt-2">
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={customTraderaAutoCommit}
+                    onChange={(e) => setCustomTraderaAutoCommit(e.target.checked)}
+                    className="rounded bg-stone-900 border-stone-700 text-rust-600 focus:ring-0 w-4 h-4 accent-rust-600"
+                  />
+                  <span className="text-stone-300 font-medium text-xs">Sofort live schalten (Auto-Commit)</span>
+                </label>
+                <span className="text-[10px] text-stone-500 block mt-0.5">
+                  Deaktivieren, um das Inserat erst als Entwurf bei Tradera zu hinterlegen.
+                </span>
+              </div>
+            </div>
+
+            <div className="flex gap-2 pt-3">
+              <button
+                type="button"
+                onClick={() => executeTraderaListing({
+                  itemType: customTraderaType,
+                  duration: customTraderaDuration,
+                  startPrice: customTraderaStartPrice,
+                  buyItNowPrice: customTraderaBuyNow,
+                  autoCommit: customTraderaAutoCommit
+                })}
+                className="flex-1 py-3 bg-rust-600 hover:bg-rust-500 text-white text-xs font-bold uppercase font-industrial rounded flex items-center justify-center gap-2 shadow-lg shadow-rust-900/40"
+              >
+                <ShoppingBag className="w-4 h-4" /> Inserat jetzt erstellen
+              </button>
+              <button
+                type="button"
+                onClick={() => setShowTraderaOptionsModal(false)}
+                className="px-4 py-3 bg-stone-800 hover:bg-stone-700 text-stone-400 text-xs font-bold uppercase rounded border border-stone-700"
+              >
+                Abbrechen
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </div>

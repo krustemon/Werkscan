@@ -4,6 +4,8 @@
     "microphone"
   ],
   "name": "Werkaholic AI",
-  "description": "",
-  "majorCapabilities": []
+  "description": "Intelligenter Produktinserate-Scanner mit automatischer Tradera-Marktplatz-Integration und Bilderkennung",
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
 }

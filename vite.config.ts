@@ -8,12 +8,22 @@ export default defineConfig(({ mode }) => {
       server: {
         port: 3000,
         host: '0.0.0.0',
+        allowedHosts: true,
+        cors: true,
+        proxy: {
+          '/api/tradera': {
+            target: 'https://api.tradera.com',
+            changeOrigin: true,
+            rewrite: (path) => path.replace(/^\/api\/tradera/, ''),
+            secure: true,
+          }
+        }
       },
       plugins: [react()],
       define: {
-        'process.env.API_KEY': JSON.stringify(env.GEMINI_API_KEY),
-        'process.env.GEMINI_API_KEY': JSON.stringify(env.GEMINI_API_KEY),
-        'process.env.BLACKBOX_API_KEY': JSON.stringify(env.BLACKBOX_API_KEY)
+        'process.env.API_KEY': JSON.stringify(env.GEMINI_API_KEY || ''),
+        'process.env.GEMINI_API_KEY': JSON.stringify(env.GEMINI_API_KEY || ''),
+        'process.env.BLACKBOX_API_KEY': JSON.stringify(env.BLACKBOX_API_KEY || '')
       },
       resolve: {
         alias: {
