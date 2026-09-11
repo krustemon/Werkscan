@@ -32,7 +32,7 @@ export interface HistoryItem {
   traderaListing?: TraderaListingResult;
 }
 
-export type ApiProviderType = 'blackbox';
+export type ApiProviderType = 'opencode' | 'gemini' | 'openrouter' | 'blackbox';
 
 export interface ApiProviderConfig {
   id: ApiProviderType;
@@ -40,6 +40,8 @@ export interface ApiProviderConfig {
   apiKey: string;
   isEnabled: boolean;
   model: string;
+  baseUrl?: string;
+  description?: string;
 }
 
 export interface TraderaConfig {
@@ -47,6 +49,7 @@ export interface TraderaConfig {
   appKey: string;
   publicKey: string;
   authorizationUrl: string;
+  redirectUri?: string;
   token: string;
   userId: string;
   tokenExpires?: string;

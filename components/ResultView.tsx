@@ -59,6 +59,7 @@ const ResultView: React.FC<ResultViewProps> = ({ result, images, onBack, onSave 
   const [traderaProgress, setTraderaProgress] = useState<{ step: number; total: number; message: string } | null>(null);
   const [traderaResult, setTraderaResult] = useState<TraderaListingResult | null>(null);
   const [traderaError, setTraderaError] = useState<string | null>(null);
+  const [actionNotice, setActionNotice] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
   const [showTraderaAuthModal, setShowTraderaAuthModal] = useState(false);
   const [showTraderaOptionsModal, setShowTraderaOptionsModal] = useState(false);
   const [authPasteInput, setAuthPasteInput] = useState('');
@@ -67,6 +68,11 @@ const ResultView: React.FC<ResultViewProps> = ({ result, images, onBack, onSave 
   const [customTraderaStartPrice, setCustomTraderaStartPrice] = useState<number>(0);
   const [customTraderaBuyNow, setCustomTraderaBuyNow] = useState<number>(0);
   const [customTraderaAutoCommit, setCustomTraderaAutoCommit] = useState<boolean>(true);
+
+  const showNotice = (text: string, type: 'success' | 'error' = 'success') => {
+    setActionNotice({ type, text });
+    setTimeout(() => setActionNotice(null), 3500);
+  };
 
   // Auto-Download Logic for NEW items
   useEffect(() => {
@@ -145,31 +151,30 @@ const ResultView: React.FC<ResultViewProps> = ({ result, images, onBack, onSave 
   };
 
   const handleDeleteImage = (index: number) => {
-    if(window.confirm("Bild wirklich löschen?")) {
-      const updated = localImages.filter((_, i) => i !== index);
-      setLocalImages(updated);
-      
-      // Fix: Adjust index safely immediately
-      let newIndex = selectedImageIndex;
-      if (index === selectedImageIndex) {
-         newIndex = Math.max(0, index - 1); 
-      } else if (index < selectedImageIndex) {
-         newIndex = selectedImageIndex - 1;
-      }
-      
-      // Ensure index is within bounds of NEW array
-      if (updated.length > 0) {
-         if (newIndex >= updated.length) newIndex = updated.length - 1;
-      } else {
-         newIndex = 0;
-      }
-      
-      setSelectedImageIndex(newIndex);
-
-      // Force Save immediately to sync DB
-      if (onSave) onSave(editData, updated);
-      lastSavedData.current = JSON.stringify(editData) + JSON.stringify(updated);
+    const updated = localImages.filter((_, i) => i !== index);
+    setLocalImages(updated);
+    
+    // Fix: Adjust index safely immediately
+    let newIndex = selectedImageIndex;
+    if (index === selectedImageIndex) {
+       newIndex = Math.max(0, index - 1); 
+    } else if (index < selectedImageIndex) {
+       newIndex = selectedImageIndex - 1;
     }
+    
+    // Ensure index is within bounds of NEW array
+    if (updated.length > 0) {
+       if (newIndex >= updated.length) newIndex = updated.length - 1;
+    } else {
+       newIndex = 0;
+    }
+    
+    setSelectedImageIndex(newIndex);
+
+    // Force Save immediately to sync DB
+    if (onSave) onSave(editData, updated);
+    lastSavedData.current = JSON.stringify(editData) + JSON.stringify(updated);
+    showNotice("Bild entfernt.");
   };
 
   const openEditor = () => {
@@ -257,9 +262,9 @@ const ResultView: React.FC<ResultViewProps> = ({ result, images, onBack, onSave 
             reasoning: newData.reasoning,
             keywords: newData.keywords && newData.keywords.length > 0 ? newData.keywords : editData.keywords
         });
-        alert("Preis neu berechnet!");
+        showNotice("Preis erfolgreich neu berechnet!", "success");
      } catch (e: any) {
-        alert("Fehler bei Neuberechnung: " + e.message);
+        showNotice("Fehler bei Neuberechnung: " + (e?.message || 'Unbekannt'), "error");
      } finally {
         setIsRecalculating(false);
      }
@@ -348,8 +353,9 @@ const ResultView: React.FC<ResultViewProps> = ({ result, images, onBack, onSave 
       doc.setFontSize(12);
       doc.text(sourceData.description, 10, 50, { maxWidth: 180 });
       doc.save("expose.pdf");
+      showNotice("PDF Exposé erfolgreich erstellt!");
     } catch (error) {
-      alert("Fehler bei PDF");
+      showNotice("Fehler bei PDF-Erstellung", "error");
     } finally {
       setIsGenerating(false);
     }
@@ -381,8 +387,13 @@ const ResultView: React.FC<ResultViewProps> = ({ result, images, onBack, onSave 
         
         a.click();
         setHasAutoDownloaded(true);
+        showNotice("ZIP-Archiv erfolgreich heruntergeladen!");
       }
-    } catch (e) { alert("Zip Fehler"); } finally { setIsGenerating(false); }
+    } catch (e) { 
+      showNotice("Fehler beim ZIP-Export", "error"); 
+    } finally { 
+      setIsGenerating(false); 
+    }
   };
 
   // --- TRADERA LISTING AUTOMATION ---
@@ -514,6 +525,24 @@ const ResultView: React.FC<ResultViewProps> = ({ result, images, onBack, onSave 
            )}
         </div>
       </div>
+
+      {/* Action Notice Notification */}
+      {actionNotice && (
+        <div className="max-w-5xl mx-auto px-4 md:px-8 pt-3 w-full animate-fade-in">
+          <div className={`p-3 rounded-lg border text-sm flex items-center gap-2.5 font-medium ${
+            actionNotice.type === 'success'
+              ? 'bg-emerald-950/80 border-emerald-600 text-emerald-200'
+              : 'bg-red-950/80 border-red-600 text-red-200'
+          }`}>
+            {actionNotice.type === 'success' ? (
+              <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+            ) : (
+              <AlertCircle className="w-4 h-4 text-red-400 shrink-0" />
+            )}
+            <span>{actionNotice.text}</span>
+          </div>
+        </div>
+      )}
 
       <div className="flex-1 overflow-y-auto p-4 md:p-8 max-w-5xl mx-auto w-full grid grid-cols-1 lg:grid-cols-2 gap-6 md:gap-8">
         <div className="space-y-6">

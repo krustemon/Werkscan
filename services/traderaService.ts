@@ -5,6 +5,7 @@ export const DEFAULT_TRADERA_CONFIG: TraderaConfig = {
   appKey: '3091c31e-12be-489e-b0db-9ef3dcc20f56',
   publicKey: '546a162e-94b3-4c7e-b166-745fecd0c933',
   authorizationUrl: 'https://api.tradera.com/token-login?',
+  redirectUri: typeof window !== 'undefined' ? `${window.location.origin}/` : '',
   token: '',
   userId: '',
   tokenExpires: '',
@@ -25,6 +26,7 @@ const TRADERA_STORAGE_KEY = 'werkaholic_tradera_config';
 export const getTraderaConfig = (): TraderaConfig => {
   try {
     const raw = localStorage.getItem(TRADERA_STORAGE_KEY);
+    const defaultUri = typeof window !== 'undefined' ? `${window.location.origin}/` : '';
     if (raw) {
       const parsed = JSON.parse(raw);
       return {
@@ -34,6 +36,7 @@ export const getTraderaConfig = (): TraderaConfig => {
         appId: parsed.appId || DEFAULT_TRADERA_CONFIG.appId,
         appKey: parsed.appKey || DEFAULT_TRADERA_CONFIG.appKey,
         publicKey: parsed.publicKey || DEFAULT_TRADERA_CONFIG.publicKey,
+        redirectUri: parsed.redirectUri || defaultUri,
         isConnected: Boolean(parsed.token && parsed.token.length > 10 && parsed.userId)
       };
     }
@@ -112,66 +115,147 @@ const getApiBaseUrl = (): string => {
 };
 
 /**
- * Erstellt Standard-Header für Tradera REST API v4.
+ * Erstellt Standard-Header für Tradera REST API v4 inklusive OAuth 2.0 Authorization Header.
  */
-const getHeaders = (config = getTraderaConfig(), requireUser = false): HeadersInit => {
+export const getHeaders = (config = getTraderaConfig(), requireUser = false): Record<string, string> => {
   const headers: Record<string, string> = {
-    'X-App-Id': config.appId,
-    'X-App-Key': config.appKey,
+    'X-App-Id': config.appId ? config.appId.trim() : '',
+    'X-App-Key': config.appKey ? config.appKey.trim() : '',
     'Content-Type': 'application/json',
     'Accept': 'application/json'
   };
 
-  if (requireUser && config.token && config.userId) {
-    headers['X-User-Id'] = config.userId;
-    headers['X-User-Token'] = config.token;
+  const rawToken = config.token ? config.token.trim() : '';
+  const cleanToken = rawToken.startsWith('Bearer ') ? rawToken.slice(7).trim() : rawToken;
+
+  if (requireUser || cleanToken) {
+    if (cleanToken) {
+      // 1. Standard OAuth 2.0 Authorization Header (Bearer Token)
+      headers['Authorization'] = `Bearer ${cleanToken}`;
+      // 2. Tradera REST API v4 Custom Token Header
+      headers['X-User-Token'] = cleanToken;
+    }
+    if (config.userId && config.userId.trim()) {
+      headers['X-User-Id'] = config.userId.trim();
+    }
   }
 
   return headers;
 };
 
+export interface TraderaVerifyResult {
+  ok: boolean;
+  status?: number;
+  message: string;
+  userId?: string;
+  sentHeaders?: Record<string, string>;
+  pwaRedirectUri?: string;
+  configuredRedirectUri?: string;
+  redirectUriMatches?: boolean;
+}
+
 /**
- * Überprüft die Gültigkeit der Tradera-Zugangsdaten (Token & App-Key).
+ * Überprüft die Gültigkeit der Tradera-Zugangsdaten (Token & App-Key) und liefert Netzwerk-Diagnose.
  */
-export const verifyTraderaConnection = async (config = getTraderaConfig()): Promise<{ ok: boolean; message: string; userId?: string }> => {
+export const verifyTraderaConnection = async (config = getTraderaConfig()): Promise<TraderaVerifyResult> => {
+  const currentPwaUrl = typeof window !== 'undefined' ? `${window.location.origin}/` : '';
+  const configuredUri = config.redirectUri || currentPwaUrl;
+  const uriMatches = !config.redirectUri || config.redirectUri.trim() === currentPwaUrl;
+
   if (!config.token || !config.userId) {
     return {
       ok: false,
-      message: 'Kein Benutzer-Token oder User-ID hinterlegt. Bitte zuerst anmelden.'
+      status: 401,
+      message: 'Kein Benutzer-Token oder User-ID hinterlegt (401 Unauthorized). Bitte zuerst über den Tradera Login-Flow anmelden oder Token einfügen.',
+      pwaRedirectUri: currentPwaUrl,
+      configuredRedirectUri: configuredUri,
+      redirectUriMatches: uriMatches
     };
   }
 
   const baseUrl = getApiBaseUrl();
+  const headers = getHeaders(config, true);
+
+  // Maskierte Header für sichere UI-Diagnose
+  const maskedHeaders: Record<string, string> = { ...headers };
+  if (maskedHeaders['Authorization']) {
+    maskedHeaders['Authorization'] = maskedHeaders['Authorization'].slice(0, 15) + '...[MASKED]';
+  }
+  if (maskedHeaders['X-User-Token']) {
+    maskedHeaders['X-User-Token'] = maskedHeaders['X-User-Token'].slice(0, 8) + '...[MASKED]';
+  }
+  if (maskedHeaders['X-App-Key']) {
+    maskedHeaders['X-App-Key'] = maskedHeaders['X-App-Key'].slice(0, 8) + '...[MASKED]';
+  }
+
   try {
     const res = await fetch(`${baseUrl}/v4/listings/seller-items`, {
       method: 'GET',
-      headers: getHeaders(config, true)
+      headers: headers
     });
 
     if (res.ok) {
       return {
         ok: true,
+        status: res.status,
         message: `Erfolgreich autorisiert als Tradera Verkäufer #${config.userId}!`,
-        userId: config.userId
+        userId: config.userId,
+        sentHeaders: maskedHeaders,
+        pwaRedirectUri: currentPwaUrl,
+        configuredRedirectUri: configuredUri,
+        redirectUriMatches: uriMatches
       };
     }
 
-    if (res.status === 403 || res.status === 401) {
+    let errorDetail = '';
+    try {
+      const errJson = await res.json();
+      errorDetail = errJson.error?.message || errJson.message || JSON.stringify(errJson);
+    } catch {
+      errorDetail = await res.text();
+    }
+
+    if (res.status === 401) {
       return {
         ok: false,
-        message: 'Tradera meldet: Token abgelaufen oder Berechtigung verweigert (403 Forbidden). Bitte erneut anmelden.'
+        status: 401,
+        message: `Tradera meldet 401 Unauthorized (${errorDetail || 'User is not authorized'}). Der OAuth-Token-Header wurde gesendet, aber der Token ist abgelaufen oder ungültig. Bitte erneuere die Anmeldung.`,
+        sentHeaders: maskedHeaders,
+        pwaRedirectUri: currentPwaUrl,
+        configuredRedirectUri: configuredUri,
+        redirectUriMatches: uriMatches
       };
     }
 
-    const errText = await res.text();
+    if (res.status === 403) {
+      return {
+        ok: false,
+        status: 403,
+        message: `Tradera meldet 403 Forbidden (${errorDetail || 'Zugriff verweigert'}). Authentifizierung empfangen, aber der Account besitzt keine Verkäuferberechtigung oder der Token ist ungültig.`,
+        sentHeaders: maskedHeaders,
+        pwaRedirectUri: currentPwaUrl,
+        configuredRedirectUri: configuredUri,
+        redirectUriMatches: uriMatches
+      };
+    }
+
     return {
       ok: false,
-      message: `Tradera Antwort (${res.status}): ${errText.slice(0, 150)}`
+      status: res.status,
+      message: `Tradera Antwort (${res.status}): ${errorDetail.slice(0, 150)}`,
+      sentHeaders: maskedHeaders,
+      pwaRedirectUri: currentPwaUrl,
+      configuredRedirectUri: configuredUri,
+      redirectUriMatches: uriMatches
     };
   } catch (error: any) {
     return {
       ok: false,
-      message: `Verbindungsfehler: ${error?.message || 'Tradera Server nicht erreichbar'}`
+      message: `Verbindungsfehler: ${error?.message || 'Tradera Server nicht erreichbar'}`,
+      sentHeaders: maskedHeaders,
+      pwaRedirectUri: currentPwaUrl,
+      configuredRedirectUri: configuredUri,
+      redirectUriMatches: uriMatches
     };
   }
 };
@@ -377,6 +461,12 @@ export const createTraderaListing = async (
       errorDetail = errJson.message || errJson.error?.message || JSON.stringify(errJson);
     } catch {
       errorDetail = await createRes.text();
+    }
+    if (createRes.status === 401) {
+      throw new Error(`Tradera 401 Unauthorized: Die Authentifizierung ist ungültig oder abgelaufen (${errorDetail}). Bitte überprüfe den Token und die Redirect-URI in den Einstellungen.`);
+    }
+    if (createRes.status === 403) {
+      throw new Error(`Tradera 403 Forbidden: Zugriff verweigert (${errorDetail}). Dein Tradera-Benutzerkonto benötigt Verkäuferberechtigung.`);
     }
     throw new Error(`Tradera Fehler beim Erstellen (${createRes.status}): ${errorDetail}`);
   }

@@ -6,6 +6,7 @@ import SettingsView from './components/SettingsView';
 import { ViewState, AdAnalysis, HistoryItem, AppSettings } from './types';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, PieChart, Pie, Cell, AreaChart, Area, CartesianGrid } from 'recharts';
 import { getHistory, saveHistoryItem, deleteHistoryItem } from './services/storageService';
+import { parseTraderaCallback, getTraderaConfig, saveTraderaConfig } from './services/traderaService';
 
 // --- THEME CONFIG ---
 const LOADING_IMAGE_URL = "https://images.unsplash.com/photo-1581091226825-a6a2a5aee158?q=80&w=2670&auto=format&fit=crop"; 
@@ -26,14 +27,42 @@ const parsePrice = (priceStr: string): number => {
 
 const DEFAULT_SETTINGS: AppSettings = {
   providers: [
-    { id: 'blackbox', name: 'Blackbox AI', apiKey: 'sk-v8P_-3kN7H9tC2bgGdGdTQ', isEnabled: true, model: 'blackboxai/blackbox-pro' }
+    { 
+      id: 'opencode', 
+      name: 'OpenCode AI (Free Tier)', 
+      apiKey: '', 
+      isEnabled: true, 
+      model: 'mimo-v2.5-free',
+      description: 'Kostenloser multimodaler Vision-Zugang mit Stealth-Tarnung'
+    },
+    { 
+      id: 'gemini', 
+      name: 'Google Gemini', 
+      apiKey: '', 
+      isEnabled: false, 
+      model: 'gemini-2.5-flash',
+      description: 'Google Cloud Gemini Vision'
+    },
+    { 
+      id: 'openrouter', 
+      name: 'OpenRouter AI', 
+      apiKey: '', 
+      isEnabled: false, 
+      model: 'google/gemini-2.0-flash-lite:free',
+      description: 'Multi-Provider Gateway'
+    },
+    { 
+      id: 'blackbox', 
+      name: 'Blackbox AI (Legacy)', 
+      apiKey: '', 
+      isEnabled: false, 
+      model: 'blackboxai/blackbox-pro',
+      description: 'Veralteter Legacy-Provider'
+    }
   ]
 };
 
 const App: React.FC = () => {
-  // Loading Screen State
-  const [isLoadingApp, setIsLoadingApp] = useState(true);
-
   const [view, setView] = useState<ViewState>(ViewState.DASHBOARD);
   const [previousView, setPreviousView] = useState<ViewState>(ViewState.DASHBOARD);
   const [currentResult, setCurrentResult] = useState<AdAnalysis | null>(null);
@@ -47,22 +76,21 @@ const App: React.FC = () => {
       const saved = localStorage.getItem('werkaholic_settings');
       if (saved) {
         const parsed = JSON.parse(saved);
-        const blackboxProv = parsed.providers?.find((p: any) => p.id === 'blackbox');
-        if (blackboxProv) {
-          let modelToUse = blackboxProv.model || 'blackboxai/blackbox-pro';
-          if (!modelToUse.includes('/') || modelToUse === 'blackboxai') {
-            modelToUse = 'blackboxai/blackbox-pro';
-          }
-          return {
-            providers: [{
-              id: 'blackbox',
-              name: 'Blackbox AI',
-              apiKey: (blackboxProv.apiKey && blackboxProv.apiKey.trim().length > 5) ? blackboxProv.apiKey.trim() : 'sk-v8P_-3kN7H9tC2bgGdGdTQ',
-              isEnabled: true,
-              model: modelToUse
-            }]
-          };
+        const existingProviders = parsed.providers || [];
+        
+        // Prüfen ob OpenCode bereits vorhanden ist
+        const hasOpenCode = existingProviders.some((p: any) => p.id === 'opencode');
+        if (!hasOpenCode) {
+          // OpenCode als primären, aktiven Provider voranstellen
+          const upgradedProviders = [
+            DEFAULT_SETTINGS.providers[0],
+            ...existingProviders
+          ];
+          const upgradedSettings = { ...parsed, providers: upgradedProviders };
+          localStorage.setItem('werkaholic_settings', JSON.stringify(upgradedSettings));
+          return upgradedSettings;
         }
+        return parsed;
       }
       return DEFAULT_SETTINGS;
     } catch (e) {
@@ -113,12 +141,33 @@ const App: React.FC = () => {
       }
     };
 
-    // Parallel: Daten laden UND Mindestladezeit für Animation abwarten
-    const minLoadTime = new Promise(resolve => setTimeout(resolve, 2500));
-    
-    Promise.all([initData(), minLoadTime]).then(() => {
-      setIsLoadingApp(false);
-    });
+    // Daten im Hintergrund laden ohne die UI zu blockieren
+    initData().catch(err => console.error("Initial load error:", err));
+
+    // Tradera OAuth-Rückleitung (Redirect / Token Callback) automatisch erfassen
+    try {
+      const search = window.location.search || window.location.hash;
+      if (search && (search.includes('token=') || search.includes('userId='))) {
+        const callbackData = parseTraderaCallback(search);
+        if (callbackData && callbackData.token) {
+          const currentConfig = getTraderaConfig();
+          saveTraderaConfig({
+            ...currentConfig,
+            token: callbackData.token,
+            userId: callbackData.userId || currentConfig.userId,
+            tokenExpires: callbackData.exp || currentConfig.tokenExpires,
+            isConnected: true
+          });
+          // URL bereinigen, damit das Token nicht sichtbar in der Adressleiste verbleibt
+          const cleanUrl = window.location.origin + window.location.pathname;
+          window.history.replaceState({}, document.title, cleanUrl);
+          // Zu den Einstellungen wechseln, um den Erfolg anzuzeigen
+          setView(ViewState.SETTINGS);
+        }
+      }
+    } catch (err) {
+      console.error("Tradera callback auto-detection failed:", err);
+    }
 
     document.documentElement.classList.add('dark');
   }, []);
@@ -228,47 +277,6 @@ const App: React.FC = () => {
     setPreviousView(view);
     setView(ViewState.RESULTS);
   };
-
-  // --- RENDER LOADING SCREEN ---
-  if (isLoadingApp) {
-    return (
-      <div className="fixed inset-0 z-[100] flex flex-col items-center justify-center bg-oil-950 overflow-hidden">
-        {/* Background Image with Overlay */}
-        <div className="absolute inset-0 z-0">
-          <img 
-            src={LOADING_IMAGE_URL} 
-            className="w-full h-full object-cover opacity-60 filter contrast-125 sepia-[0.2]" 
-            alt="Werkaholic Workshop" 
-          />
-          <div className="absolute inset-0 bg-gradient-to-t from-oil-950 via-oil-950/80 to-transparent"></div>
-        </div>
-
-        <div className="relative z-10 flex flex-col items-center">
-          <div className="mb-6 animate-fade-in">
-            <div className="bg-rust-600 p-3 rounded-xl shadow-2xl shadow-rust-600/30 rotate-3">
-              <Wrench className="w-12 h-12 text-white" />
-            </div>
-          </div>
-          
-          <h1 className="text-5xl md:text-6xl font-black text-white uppercase tracking-widest font-industrial mb-2 drop-shadow-xl">
-            Werkaholic <span className="text-rust-500">AI</span>
-          </h1>
-          <p className="text-stone-400 text-sm tracking-[0.3em] uppercase mb-12">
-            Professional Valuation Tools
-          </p>
-
-          <div className="w-64 h-1.5 bg-stone-800 rounded-full overflow-hidden border border-stone-700">
-             <div className="h-full bg-rust-500 animate-[width_2s_ease-out] w-full origin-left"></div>
-          </div>
-          <style>{`
-            @keyframes width { from { width: 0%; } to { width: 100%; } }
-          `}</style>
-          
-          <p className="mt-4 text-xs text-stone-500 animate-pulse">Initialisiere Datenbank...</p>
-        </div>
-      </div>
-    );
-  }
 
   // --- MAIN APP RENDER ---
 

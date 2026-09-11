@@ -345,12 +345,16 @@ const Scanner: React.FC<ScannerProps> = ({ onAnalysisComplete, onCancel, isEmbed
   };
 
   const speakResult = (text: string) => {
-    if ('speechSynthesis' in window) {
-      window.speechSynthesis.cancel();
-      const utterance = new SpeechSynthesisUtterance(text);
-      utterance.lang = 'de-DE';
-      utterance.rate = 1.1;
-      window.speechSynthesis.speak(utterance);
+    try {
+      if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
+        window.speechSynthesis.cancel();
+        const utterance = new SpeechSynthesisUtterance(text);
+        utterance.lang = 'de-DE';
+        utterance.rate = 1.1;
+        window.speechSynthesis.speak(utterance);
+      }
+    } catch (e) {
+      console.warn("Sprachausgabe nicht verfügbar:", e);
     }
   };
 
@@ -384,14 +388,15 @@ const Scanner: React.FC<ScannerProps> = ({ onAnalysisComplete, onCancel, isEmbed
           setImage(mainImage);
           setAdditionalImages(extras);
 
-          // Analyze main image
+          // Analyze main image with extra reference images
           const providers = settings?.providers || [];
-          const result = await analyzeImage(mainImage, providers);
+          const result = await analyzeImage(mainImage, providers, undefined, extras);
           
           handleScanSuccess(result, mainImage, true, extras);
 
-      } catch (err) {
-          setError("Fehler beim Upload/Analyse.");
+      } catch (err: any) {
+          console.error("Upload/Analyse Fehler:", err);
+          setError(err?.message || "Fehler beim Upload/Analyse mit OpenCode AI.");
       } finally {
           setIsAnalyzing(false);
       }
@@ -399,16 +404,15 @@ const Scanner: React.FC<ScannerProps> = ({ onAnalysisComplete, onCancel, isEmbed
   };
 
   const handleAnalyze = async () => {
-    // Only used if image set but not analyzed (rare case in new flow)
     if (!image) return;
     setIsAnalyzing(true);
     setError(null);
     try {
       const providers = settings?.providers || [];
-      const result = await analyzeImage(image, providers);
+      const result = await analyzeImage(image, providers, undefined, additionalImages);
       handleScanSuccess(result, image, true, additionalImages);
     } catch (err: any) {
-        setError("Fehler bei Analyse.");
+        setError(err?.message || "Fehler bei Analyse.");
     } finally {
       setIsAnalyzing(false);
     }
